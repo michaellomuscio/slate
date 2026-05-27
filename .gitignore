@@ -16,6 +16,13 @@ Slate/Slate.entitlements
 .swiftpm/
 .build/
 
+# Python
+__pycache__/
+*.pyc
+
+# Whisper models (large binaries — fetched, not committed)
+pipeline/models/*.bin
+
 # Recording output (never commit takes)
 *.slatebundle/
 takes/
