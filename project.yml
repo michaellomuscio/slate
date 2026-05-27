@@ -1,0 +1,43 @@
+name: Slate
+options:
+  bundleIdPrefix: com.lomusciolabs
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+  groupSortPosition: top
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"            # Swift 5 language mode (compiler is 6.3) — avoids strict-concurrency churn on v1
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    PRODUCT_BUNDLE_IDENTIFIER: com.lomusciolabs.slate
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_HARDENED_RUNTIME: NO     # off for local dev; turn ON when notarizing for distribution
+    DEAD_CODE_STRIPPING: YES
+
+targets:
+  Slate:
+    type: application
+    platform: macOS
+    sources:
+      - path: Slate
+    entitlements:
+      path: Slate/Slate.entitlements
+      properties:
+        # Unsandboxed: global event monitoring (clicks) + arbitrary folder writes need this.
+        # For Mac App Store you'd sandbox; for Developer-ID notarized distribution, unsandboxed is fine.
+        com.apple.security.app-sandbox: false
+    info:
+      path: Slate/Info.generated.plist
+      properties:
+        CFBundleName: Slate
+        CFBundleDisplayName: Slate
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+        LSApplicationCategoryType: public.app-category.video
+        NSHighResolutionCapable: true
+        NSCameraUsageDescription: "Slate records your camera as a separate video track so your screencasts can show your face."
+        NSMicrophoneUsageDescription: "Slate records your microphone as a separate, uncompressed audio track for clean transcription and editing."
+        NSHumanReadableCopyright: "© 2026 Michael Lomuscio / Lomuscio Labs"
