@@ -1,7 +1,21 @@
 import SwiftUI
 import ScreenCaptureKit
 
+/// Top-level shell: two tabs — make a recording, or review the ones you already made.
 struct ContentView: View {
+    var body: some View {
+        TabView {
+            RecordPanel()
+                .tabItem { Label("Record", systemImage: "record.circle") }
+            LibraryView()
+                .tabItem { Label("Library", systemImage: "rectangle.stack") }
+        }
+        .frame(minWidth: 880, minHeight: 620)
+    }
+}
+
+/// The recording UI — was the whole of ContentView before the Library was added.
+struct RecordPanel: View {
     @StateObject private var coordinator = RecordingCoordinator()
 
     var body: some View {

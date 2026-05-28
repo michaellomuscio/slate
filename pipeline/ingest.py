@@ -26,29 +26,37 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from lib.bundle import Bundle, probe_duration, run
+from lib.bundle import Bundle, ffmpeg_cmd, probe_duration, run
 
 SPECIAL_TOKEN = re.compile(r'^\[_.*\]$')          # [_BEG_], [_EOT_], [_TT_300], ...
-VERBATIM_PROMPT = "Um, uh, hmm, so, like, you know, I mean, well,"
 
-KNOWN_MODEL_FALLBACKS = [
-    str(Path.home() / "Downloads/workspace/whisper_models/ggml-base.en.bin"),
-]
+# Aggressive filler-priming prompt — biases whisper toward verbatim transcription
+# (keeping "um"/"uh"/etc). Used when --verbatim is set.
+VERBATIM_PROMPT = ("Um, uh, hmm, well, so, like, you know, I mean. "
+                   "Um... uh... so um, like, I was, uh, going to say, you know, hmm.")
+
+# Preferred whisper models in descending quality order. Bigger models retain more
+# disfluencies (the reason base.en drops "um"/"uh" so aggressively).
+MODEL_PREFERENCE = ("small.en", "medium.en", "small", "medium", "base.en", "base")
 
 
 def find_model(arg):
-    cands = []
     if arg:
-        cands.append(arg)
-    if os.environ.get("SLATE_WHISPER_MODEL"):
-        cands.append(os.environ["SLATE_WHISPER_MODEL"])
-    here = Path(os.path.dirname(os.path.abspath(__file__)))
-    cands += sorted(glob.glob(str(here / "models" / "ggml-*.bin")))
-    cands += KNOWN_MODEL_FALLBACKS
-    cands += sorted(glob.glob("/opt/homebrew/share/whisper-cpp/models/ggml-*.bin"))
-    for c in cands:
-        if c and Path(c).exists():
-            return c
+        return arg
+    env = os.environ.get("SLATE_WHISPER_MODEL")
+    if env and Path(env).exists():
+        return env
+    here = Path(__file__).resolve().parent
+    search_dirs = [
+        here / "models",
+        Path.home() / "Downloads/workspace/whisper_models",
+        Path("/opt/homebrew/share/whisper-cpp/models"),
+    ]
+    for pref in MODEL_PREFERENCE:
+        for d in search_dirs:
+            p = d / ("ggml-%s.bin" % pref)
+            if p.exists():
+                return str(p)
     raise SystemExit("No whisper model found. Pass --model PATH or set SLATE_WHISPER_MODEL.")
 
 
@@ -93,9 +101,11 @@ def words_from_whisper(data):
     return words
 
 
-def detect_silences(audio_path, noise_db=-30, min_dur=0.35):
+def detect_silences(audio_path, noise_db=-28, min_dur=0.22):
+    # Tighter defaults than v0.1 — catches the shorter pauses that surround dropped
+    # filler words. -28dB picks up some voiced low-energy "um"s that -30dB missed.
     r = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-i", str(audio_path),
+        [ffmpeg_cmd(), "-hide_banner", "-i", str(audio_path),
          "-af", "silencedetect=noise=%ddB:duration=%s" % (noise_db, min_dur), "-f", "null", "-"],
         capture_output=True, text=True)
     out = r.stderr
@@ -120,7 +130,7 @@ def extract_frames(b, out_dir, duration, periodic=5.0, max_frames=60):
         times.add(round(float(e["t"]), 2))
     # scene changes (global time)
     r = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-i", str(screen),
+        [ffmpeg_cmd(), "-hide_banner", "-i", str(screen),
          "-vf", "select='gt(scene,0.4)',showinfo", "-vsync", "vfr", "-f", "null", "-"],
         capture_output=True, text=True)
     for m in re.findall(r"pts_time:([\d.]+)", r.stderr):
@@ -136,7 +146,7 @@ def extract_frames(b, out_dir, duration, periodic=5.0, max_frames=60):
         local = b.to_local("screen", gt)
         name = "f_%06d.jpg" % int(gt * 1000)
         try:
-            run(["ffmpeg", "-y", "-ss", "%.3f" % local, "-i", str(screen),
+            run([ffmpeg_cmd(), "-y", "-ss", "%.3f" % local, "-i", str(screen),
                  "-frames:v", "1", "-vf", "scale=960:-1", str(out_dir / name)])
             frames.append({"t": gt, "file": "frames/" + name})
         except RuntimeError:

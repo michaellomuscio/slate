@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from lib.bundle import probe_duration, run
+from lib.bundle import ffmpeg_cmd, probe_duration, run
 
 NARRATION = (
     "Hey everyone, welcome back. "
@@ -39,17 +39,17 @@ def main():
         aiff = Path(tmp) / "n.aiff"
         run(["say", "-o", str(aiff), NARRATION])
         # Recorder writes 16-bit LPCM mono wav; match that.
-        run(["ffmpeg", "-y", "-i", str(aiff), "-ac", "1", "-ar", "48000",
+        run([ffmpeg_cmd(), "-y", "-i", str(aiff), "-ac", "1", "-ar", "48000",
              "-sample_fmt", "s16", str(out / "audio.wav")])
 
     dur = probe_duration(out / "audio.wav")
     print("  audio duration: %.2fs" % dur)
 
     # Screen: a moving test pattern at 1080p/30. Camera: a smaller pattern for overlay.
-    run(["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=30",
+    run([ffmpeg_cmd(), "-y", "-f", "lavfi", "-i", "testsrc2=size=1920x1080:rate=30",
          "-t", "%.3f" % dur, "-c:v", "libx264", "-pix_fmt", "yuv420p",
          "-preset", "ultrafast", str(out / "screen.mov")])
-    run(["ffmpeg", "-y", "-f", "lavfi", "-i", "smptebars=size=640x480:rate=30",
+    run([ffmpeg_cmd(), "-y", "-f", "lavfi", "-i", "smptebars=size=640x480:rate=30",
          "-t", "%.3f" % dur, "-c:v", "libx264", "-pix_fmt", "yuv420p",
          "-preset", "ultrafast", str(out / "camera.mov")])
 

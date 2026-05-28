@@ -23,6 +23,9 @@ __pycache__/
 # Whisper models (large binaries — fetched, not committed)
 pipeline/models/*.bin
 
+# libass-enabled ffmpeg static binary (~25MB — fetched by pipeline/bin/install.sh)
+pipeline/bin/ffmpeg
+
 # Recording output (never commit takes)
 *.slatebundle/
 takes/

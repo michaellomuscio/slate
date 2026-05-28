@@ -103,7 +103,7 @@ class Bundle:
 def probe_duration(path):
     """Seconds (float) of a media file, via ffprobe."""
     out = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+        [ffprobe_cmd(), "-v", "error", "-show_entries", "format=duration",
          "-of", "default=nokey=1:noprint_wrappers=1", str(path)],
         capture_output=True, text=True)
     try:
@@ -121,9 +121,31 @@ def run(cmd, **kw):
     return r
 
 
+def ffmpeg_cmd():
+    """Path to the ffmpeg binary the pipeline should use.
+
+    Prefers a bundled build at `pipeline/bin/ffmpeg` (the libass-enabled evermeet
+    binary) so caption burn-in works. Falls back to system `ffmpeg`. Override with
+    `SLATE_FFMPEG=/path/to/ffmpeg`.
+    """
+    env = os.environ.get("SLATE_FFMPEG")
+    if env and Path(env).exists():
+        return env
+    here = Path(__file__).resolve().parent.parent       # .../pipeline/
+    local = here / "bin" / "ffmpeg"
+    if local.exists():
+        return str(local)
+    return "ffmpeg"
+
+
+def ffprobe_cmd():
+    """ffprobe doesn't need libass — system ffprobe is fine."""
+    return os.environ.get("SLATE_FFPROBE") or "ffprobe"
+
+
 def ffmpeg_has_filter(name):
     try:
-        r = subprocess.run(["ffmpeg", "-hide_banner", "-filters"],
+        r = subprocess.run([ffmpeg_cmd(), "-hide_banner", "-filters"],
                            capture_output=True, text=True)
         return any(line.split()[1:2] == [name] for line in r.stdout.splitlines()
                    if len(line.split()) > 1)

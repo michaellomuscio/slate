@@ -19,9 +19,20 @@ import tempfile
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from lib.bundle import Bundle, ffmpeg_has_filter, fmt_ts_srt, run
+from lib.bundle import Bundle, ffmpeg_cmd, ffmpeg_has_filter, fmt_ts_srt, run
 
 V_ENC_FINAL = ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20", "-preset", "veryfast"]
+
+# Caption styling baked at burn time (ASS style attributes). Tuned per preset so the
+# captions don't fight the camera bubble or the frame edges.
+CAPTION_STYLES = {
+    "course": ("FontName=Helvetica,FontSize=22,PrimaryColour=&H00FFFFFF&,"
+               "BackColour=&H80000000&,BorderStyle=3,Outline=0,Shadow=0,"
+               "MarginV=48,Alignment=2,Bold=1"),
+    "social": ("FontName=Helvetica,FontSize=38,PrimaryColour=&H00FFFFFF&,"
+               "BackColour=&H80000000&,BorderStyle=3,Outline=0,Shadow=0,"
+               "MarginV=200,Alignment=2,Bold=1"),
+}
 
 
 def even(n):
@@ -31,6 +42,25 @@ def even(n):
 
 def clamp(v, lo, hi):
     return max(lo, min(hi, v))
+
+
+def zoom_pan_filter(W, H, Z, cx, cy, dur, fps, ramp=0.35):
+    """Return a `zoompan=…` filter that eases into a zoom toward (cx,cy) and back.
+
+    `crop` won't do this — its w/h are evaluated once at filter init. `zoompan`
+    is the filter built for time-varying zoom. Progress p(time) ramps 0→1 over
+    `ramp` s, holds at 1, ramps 1→0 over the last `ramp` s. Smoothstepped to
+    s(p)=p²(3−2p). Zoom factor at time t is 1+(Z−1)·s. The source window is
+    centered on (cx, cy) and clamped to the frame at each instant.
+    """
+    r = max(0.01, min(ramp, dur / 2.0))
+    p = "min(max(min(time/%.4f,(%.4f-time)/%.4f),0),1)" % (r, dur, r)
+    s = "(%s)*(%s)*(3-2*(%s))" % (p, p, p)
+    z = "(1+(%.4f-1)*(%s))" % (Z, s)
+    x = "max(0,min(iw-iw/(%s),%.2f-iw/(2*(%s))))" % (z, cx, z)
+    y = "max(0,min(ih-ih/(%s),%.2f-ih/(2*(%s))))" % (z, cy, z)
+    return ("zoompan=z='%s':x='%s':y='%s':d=1:s=%dx%d:fps=%d"
+            % (z, x, y, W, H, fps))
 
 
 def active_zoom(zooms, t):
@@ -78,16 +108,13 @@ def render_segment(b, idx, piece, W, H, fps, cam, tmp):
                    "-i", str(b.stream_path("audio"))]
 
     # video filtergraph
-    fc = ["[0:v]scale=%d:%d,setsar=1,fps=%d[base0]" % (W, H, fps)]
+    fc = ["[0:v]scale=%d:%d,setsar=1,fps=%d,setpts=PTS-STARTPTS[base0]" % (W, H, fps)]
     last = "base0"
     z = piece.get("zoom")
     if z:
         Z = max(1.01, float(z["scale"]))
-        cw, ch = even(W / Z), even(H / Z)
-        cx = clamp(z["x"] - cw / 2.0, 0, W - cw)
-        cy = clamp(z["y"] - ch / 2.0, 0, H - ch)
-        fc.append("[%s]crop=%d:%d:%d:%d,scale=%d:%d[zoomed]" %
-                  (last, cw, ch, int(cx), int(cy), W, H))
+        chain = zoom_pan_filter(W, H, Z, float(z["x"]), float(z["y"]), dur, fps)
+        fc.append("[%s]%s[zoomed]" % (last, chain))
         last = "zoomed"
     if cam:
         d = even(cam.get("size", 0.18) * H)
@@ -107,7 +134,7 @@ def render_segment(b, idx, piece, W, H, fps, cam, tmp):
     else:
         fc.append("[%s]copy[vout]" % last)
 
-    cmd = (["ffmpeg", "-y"] + inputs +
+    cmd = ([ffmpeg_cmd(), "-y"] + inputs +
            ["-filter_complex", ";".join(fc), "-map", "[vout]", "-map", "%d:a" % a_idx] +
            ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast",
             "-r", str(fps), "-c:a", "aac", "-ar", "48000", "-ac", "1", str(out)])
@@ -208,10 +235,12 @@ def main():
         vf = ("scale=%d:%d:force_original_aspect_ratio=decrease,"
               "pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black" % (ow, oh, ow, oh))
         if burn:
-            vf += ",subtitles='%s'" % (b.path / "final.srt")
+            style = CAPTION_STYLES.get(preset, CAPTION_STYLES["course"])
+            srt_path = str(b.path / "final.srt")
+            vf += ",subtitles=filename='%s':force_style='%s'" % (srt_path, style)
 
         final = b.path / "final.mp4"
-        run(["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", str(listfile),
+        run([ffmpeg_cmd(), "-y", "-f", "concat", "-safe", "0", "-i", str(listfile),
              "-vf", vf] + V_ENC_FINAL + ["-c:a", "aac", "-ar", "48000", str(final)])
 
     from lib.bundle import probe_duration

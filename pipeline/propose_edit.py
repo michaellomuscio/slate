@@ -118,7 +118,7 @@ def main():
         "zooms": zooms,
         "camera": {"enabled": has_camera and not args.no_camera,
                    "shape": "circle", "corner": "br", "size": 0.18},
-        "captions": {"enabled": True, "burn": False},
+        "captions": {"enabled": True, "burn": True},
     }
     b.write_json("edit.json", edit)
 
