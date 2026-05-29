@@ -164,13 +164,14 @@ def render_segment(b, idx, piece, W, H, fps, cam, tmp, sx, sy):
     return out
 
 
-def build_srt(b, kept_segments):
-    """Remap transcript words onto the post-cut timeline and group into cues."""
+def caption_cues(b, kept_segments, max_words=7, gap=0.6):
+    """Remap transcript words onto the post-cut timeline and group into cues — the shared
+    basis for both the .srt sidecar and the karaoke .ass. Each cue is a list of
+    (start, end, word) on the new (post-cut) timeline; words inside cut spans are dropped."""
     tr = b.load_transcript()
     if not tr:
-        return ""
-    spans = []
-    acc = 0.0
+        return []
+    spans, acc = [], 0.0
     for s in kept_segments:
         spans.append((s["start"], s["end"], acc))
         acc += s["end"] - s["start"]
@@ -188,12 +189,16 @@ def build_srt(b, kept_segments):
             if cur:
                 cues.append(cur); cur = []
             continue
-        if cur and (len(cur) >= 7 or ns - cur[-1][1] > 0.6):
+        if cur and (len(cur) >= max_words or ns - cur[-1][1] > gap):
             cues.append(cur); cur = []
         cur.append((ns, ne, w["w"]))
     if cur:
         cues.append(cur)
+    return cues
 
+
+def build_srt(b, kept_segments):
+    cues = caption_cues(b, kept_segments)
     out = []
     for i, cue in enumerate(cues, 1):
         start = cue[0][0]
@@ -201,6 +206,56 @@ def build_srt(b, kept_segments):
         text = " ".join(c[2] for c in cue).strip()
         out.append("%d\n%s --> %s\n%s\n" % (i, fmt_ts_srt(start), fmt_ts_srt(end), text))
     return "\n".join(out)
+
+
+def _fmt_ts_ass(seconds):
+    seconds = max(0.0, seconds)
+    cs = int(round(seconds * 100))
+    h, cs = divmod(cs, 360000)
+    m, cs = divmod(cs, 6000)
+    s, cs = divmod(cs, 100)
+    return "%d:%02d:%02d.%02d" % (h, m, s, cs)
+
+
+def build_ass_karaoke(b, kept_segments, ow, oh, font_size, margin_v):
+    """A karaoke (.ass) caption track: each spoken word highlights in turn (white →
+    bright, libass `\\k`). The punchy word-by-word style that reads well on social. Returns
+    the .ass text, or '' if there are no words."""
+    cues = caption_cues(b, kept_segments)
+    if not cues:
+        return ""
+    header = (
+        "[Script Info]\n"
+        "ScriptType: v4.00+\n"
+        "WrapStyle: 2\n"
+        "ScaledBorderAndShadow: yes\n"
+        "PlayResX: %d\nPlayResY: %d\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
+        "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
+        "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
+        # PrimaryColour (sung) = bright yellow; SecondaryColour (unsung) = white; black
+        # outline (BorderStyle 1, Outline 3, Shadow 1) so it's readable on ANY screen content.
+        # Alignment 2 = bottom-center.
+        "Style: Slate,Helvetica,%d,&H0000F4FF,&H00FFFFFF,&H00000000,&HA0000000,"
+        "-1,0,0,0,100,100,0,0,1,3,1,2,80,80,%d,1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    ) % (ow, oh, int(font_size), int(margin_v))
+
+    lines = []
+    for cue in cues:
+        start = cue[0][0]
+        end = max(c[1] for c in cue)
+        parts = []
+        for i, (ws, we, word) in enumerate(cue):
+            nxt = cue[i + 1][0] if i + 1 < len(cue) else we
+            k = max(1, int(round((nxt - ws) * 100)))      # centiseconds this word is active
+            parts.append("{\\k%d}%s" % (k, word.replace("{", "(").replace("}", ")")))
+        text = " ".join(parts)
+        lines.append("Dialogue: 0,%s,%s,Slate,,0,0,0,,%s"
+                     % (_fmt_ts_ass(start), _fmt_ts_ass(end), text))
+    return header + "\n".join(lines) + "\n"
 
 
 def main():
@@ -258,10 +313,7 @@ def main():
         listfile = tmp / "list.txt"
         listfile.write_text("".join("file '%s'\n" % f for f in seg_files))
 
-        srt = build_srt(b, kept)
-        (b.path / "final.srt").write_text(srt)
-        burn = bool(edit.get("captions", {}).get("burn")) and ffmpeg_has_filter("subtitles")
-
+        # Framing target first (captions are composited after the frame is sized).
         if preset == "social":
             ow, oh = (1080, 1920)
             if args.preview:
@@ -275,10 +327,28 @@ def main():
                 ow, oh = even(ow / 2), even(oh / 2)
             vf = ("scale=%d:%d:force_original_aspect_ratio=decrease,"
                   "pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black" % (ow, oh, ow, oh))
-        if burn:
-            style = CAPTION_STYLES.get(preset, CAPTION_STYLES["course"])
-            srt_path = str(b.path / "final.srt")
-            vf += ",subtitles=filename='%s':force_style='%s'" % (srt_path, style)
+
+        # Captions: always write the .srt sidecar. If burn requested: social gets word-level
+        # KARAOKE (.ass, each word highlights as spoken — punchy for vertical); course gets a
+        # clean burned SRT. Falls back to the sidecar if libass is unavailable.
+        (b.path / "final.srt").write_text(build_srt(b, kept))
+        burn = False
+        cap_desc = "final.srt (sidecar — upload alongside the video)"
+        if bool(edit.get("captions", {}).get("burn")):
+            if preset == "social" and ffmpeg_has_filter("ass"):
+                ass_text = build_ass_karaoke(b, kept, ow, oh,
+                                             round(oh * 0.05), round(oh * 0.14))
+                if ass_text:
+                    (b.path / "final.ass").write_text(ass_text)
+                    vf += ",ass=filename='%s'" % str(b.path / "final.ass")
+                    burn = True
+                    cap_desc = "final.ass word-karaoke (burned in)"
+            if not burn and ffmpeg_has_filter("subtitles"):
+                style = CAPTION_STYLES.get(preset, CAPTION_STYLES["course"])
+                vf += ",subtitles=filename='%s':force_style='%s'" % (
+                    str(b.path / "final.srt"), style)
+                burn = True
+                cap_desc = "final.srt (burned in)"
 
         final = b.path / "final.mp4"
         run([ffmpeg_cmd(), "-y", "-f", "concat", "-safe", "0", "-i", str(listfile),
@@ -289,7 +359,7 @@ def main():
     print("\nRendered:", final)
     print("  preset:   %s%s  (%dx%d)" % (preset, "  [preview]" if args.preview else "", ow, oh))
     print("  length:   %.2fs  (from %.2fs source)" % (probe_duration(final), src_dur))
-    print("  captions: final.srt%s" % ("  (burned in)" if burn else "  (sidecar)"))
+    print("  captions: %s" % cap_desc)
 
 
 if __name__ == "__main__":
