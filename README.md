@@ -63,6 +63,70 @@ See **[WORKFLOW.md](WORKFLOW.md)** for the full loop and the step-by-step comman
 
 ---
 
+## Commands — what to run after a recording
+
+These are Claude Code slash commands, defined in [`.claude/commands/`](.claude/commands) — run
+them from the Claude Code prompt in this repo. Each takes an optional **bundle path** that
+defaults to the newest take under `~/Movies/Slate/`, so you can usually omit it. Under the hood
+they call the `pipeline/` scripts, which you can also run directly with `python3` (same flags).
+
+### `/slate [social|course] [bundle] [notes]` — the whole thing, one command
+Ingest → read the take → propose a cut → real editorial judgment → show you the plan → render
+on your OK. The fast path; use this most of the time.
+- **`social`** = the tightest 30–60s vertical (9:16, karaoke captions). **`course`** = the full
+  clean landscape walkthrough. Default: `course`.
+- Steer it with free-text notes: `/slate social latest "lead with the deploy moment"`.
+- Include `"just do it"` in the notes to skip the approval pause and render straight through.
+
+For more control, run the steps yourself in this order:
+
+### 1 · `/slate-ingest [bundle]` — transcribe + see
+Peak-normalizes the audio (rescues a quiet mic), transcribes it (ElevenLabs Scribe when a key
+is present — verbatim, keeps "um/uh" with word timestamps; otherwise local Whisper), detects
+silences + voiced-gap disfluencies, and extracts frames.
+→ `transcript.json`, `frames/`, `frames.json`
+- Force a backend: `--stt eleven` or `--stt whisper` (fully offline + free).
+
+### 2 · `/slate-digest [bundle]` — understand the take
+Writes `take.md` (overview, an **audio-health flag**, the app/chapter timeline, clicks tied to
+the words spoken near them, the transcript, edit candidates, and a frame index) and
+`contact_sheet.jpg` (every frame tiled in one image), then summarizes the take for you.
+→ `take.md`, `contact_sheet.jpg`
+- Run this to judge whether a take is worth editing before you sink time into it.
+
+### 3a · `/slate-strip-filler [bundle]` — clean it up
+Proposes dead-air / filler / disfluency cuts, then Claude reviews them as an editor — protects
+intentional pauses, catches false starts and tangents — and writes the edit.
+→ `edit.json`
+- `--mode silence` mutes fillers in place instead of cutting (keeps the original length).
+
+### 3b · `/slate-cut social|course [bundle]` — shape it to a format
+The narrative step. For **social**, find the single strongest 30–60s and cut the rest; for
+**course**, keep the full clean walkthrough. Places zooms on the moments that matter.
+→ `edit.json`
+
+### 4 · `/slate-render [bundle] [--preset social|course] [--preview]` — make the video
+Executes `edit.json` with ffmpeg into the final video. Cuts keep audio+video locked, zoom eases
+on clicks, the camera bubble is composited, captions burn in, and the output is loudness-
+normalized. → `final.mp4`, `final.srt` (+ `final.ass` for social karaoke)
+- `--preview` renders at half-resolution for a fast look — drop it for the full-quality render.
+- `--no-zoom` / `--no-camera` disable those layers.
+
+**Typical hands-on flow:** record → `/slate-ingest` → `/slate-digest` → `/slate-cut social` →
+*(review the plan)* → `/slate-render --preview` → *(looks right?)* → `/slate-render`.
+Or just `/slate social` and let it run.
+
+| slash command | script it calls | writes |
+|---|---|---|
+| `/slate-ingest` | `pipeline/ingest.py` | `transcript.json`, `frames/` |
+| `/slate-digest` | `pipeline/digest.py` | `take.md`, `contact_sheet.jpg` |
+| `/slate-strip-filler` | `pipeline/propose_edit.py` | `edit.json` |
+| `/slate-cut` | *(Claude writes the EDL directly)* | `edit.json` |
+| `/slate-render` | `pipeline/render.py` | `final.mp4`, `final.srt` |
+| `/slate` | all of the above, narrated | `final.mp4` |
+
+---
+
 ## How it works
 
 Three layers, one contract.
