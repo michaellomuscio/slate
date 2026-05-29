@@ -33,6 +33,15 @@ ENTITLEMENTS="$ROOT/Slate/Slate.entitlements"
 NOTARIZE=1
 [ "${1:-}" = "--no-notarize" ] && NOTARIZE=0
 
+# Notarization auth: prefer explicit env credentials (robust if the keychain profile is flaky)
+#   NOTARY_APPLE_ID=you@example.com NOTARY_PASSWORD=app-specific-pw ./scripts/package.sh
+# else fall back to the stored keychain profile ($NOTARY_PROFILE).
+if [ -n "${NOTARY_APPLE_ID:-}" ] && [ -n "${NOTARY_PASSWORD:-}" ]; then
+  NOTARY_AUTH=(--apple-id "$NOTARY_APPLE_ID" --team-id "$TEAM_ID" --password "$NOTARY_PASSWORD")
+else
+  NOTARY_AUTH=(--keychain-profile "$NOTARY_PROFILE")
+fi
+
 cd "$ROOT"
 echo "▸ 1/6  Generating Xcode project (XcodeGen)…"
 xcodegen generate >/dev/null
@@ -81,7 +90,7 @@ if [ "$NOTARIZE" = "1" ]; then
   echo "▸ 5/6  Notarizing the app (profile: $NOTARY_PROFILE)…"
   ZIP="$DIST/Slate-notarize.zip"
   ditto -c -k --keepParent "$APP" "$ZIP"
-  if xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait; then
+  if xcrun notarytool submit "$ZIP" "${NOTARY_AUTH[@]}" --wait; then
     notarized=1
   else
     echo "  ⚠ Notarization unavailable (profile '$NOTARY_PROFILE' missing, or submit failed)."
@@ -95,7 +104,7 @@ if [ "$notarized" = "1" ]; then
   echo "▸ 6/6  Stapling app, building + notarizing DMG…"
   xcrun stapler staple "$APP"          # offline-valid app (survives copy-out of the DMG)
   build_dmg
-  xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
+  xcrun notarytool submit "$DMG" "${NOTARY_AUTH[@]}" --wait
   xcrun stapler staple "$DMG"
   echo "✓ Notarized + stapled (app and DMG)."
 else
