@@ -74,25 +74,31 @@ build_dmg() {
   codesign --force --timestamp --sign "$DEV_ID" "$DMG" 2>/dev/null || true
 }
 
-if [ "$NOTARIZE" = "1" ] && xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" >/dev/null 2>&1; then
+# Attempt notarization directly (don't gate on a fragile network `history` precheck — that
+# silently skipped notarization when the call hiccuped). Fall back to signed-only on failure.
+notarized=0
+if [ "$NOTARIZE" = "1" ]; then
   echo "▸ 5/6  Notarizing the app (profile: $NOTARY_PROFILE)…"
   ZIP="$DIST/Slate-notarize.zip"
   ditto -c -k --keepParent "$APP" "$ZIP"
-  xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
+  if xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait; then
+    notarized=1
+  else
+    echo "  ⚠ Notarization unavailable (profile '$NOTARY_PROFILE' missing, or submit failed)."
+    echo "    Create it once:  xcrun notarytool store-credentials \"$NOTARY_PROFILE\" \\"
+    echo "        --apple-id \"YOUR_APPLE_ID\" --team-id $TEAM_ID --password \"APP_SPECIFIC_PASSWORD\""
+  fi
   rm -f "$ZIP"
+fi
+
+if [ "$notarized" = "1" ]; then
   echo "▸ 6/6  Stapling app, building + notarizing DMG…"
   xcrun stapler staple "$APP"          # offline-valid app (survives copy-out of the DMG)
   build_dmg
-  # The DMG needs its OWN notarization to be staple-able; the app inside is already stapled.
   xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
   xcrun stapler staple "$DMG"
   echo "✓ Notarized + stapled (app and DMG)."
 else
-  if [ "$NOTARIZE" = "1" ]; then
-    echo "▸ (skipping notarization — no keychain profile '$NOTARY_PROFILE'.)"
-    echo "  To enable: xcrun notarytool store-credentials \"$NOTARY_PROFILE\" \\"
-    echo "      --apple-id \"YOUR_APPLE_ID\" --team-id $TEAM_ID --password \"APP_SPECIFIC_PASSWORD\""
-  fi
   build_dmg
   echo "✓ Signed (not notarized). Runs locally on this Mac by double-click."
 fi
