@@ -1,0 +1,54 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- Slate app icon: a film clapperboard (the clapboard that syncs picture + sound — the
+       app's core metaphor) on a slate-blue squircle. Source of truth; rasterized by
+       branding/make-icon.sh into the AppIcon asset catalog. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8193C8"/>
+      <stop offset="0.5" stop-color="#4C5880"/>
+      <stop offset="1" stop-color="#1F2639"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.32" cy="0.24" r="0.75">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.20"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="stickclip">
+      <rect x="270" y="312" width="484" height="116" rx="26"/>
+    </clipPath>
+    <filter id="shadow" x="-25%" y="-25%" width="150%" height="170%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="15"/>
+      <feOffset dy="18" result="off"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.42"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- background squircle -->
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#bg)"/>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#glow)"/>
+
+  <!-- clapperboard -->
+  <g filter="url(#shadow)">
+    <!-- board body -->
+    <rect x="270" y="452" width="484" height="260" rx="40" fill="#161B27"/>
+    <rect x="270" y="452" width="484" height="60" rx="40" fill="#FFFFFF" fill-opacity="0.05"/>
+    <!-- faint slate lines (the write-on-me area) -->
+    <line x1="322" y1="556" x2="702" y2="556" stroke="#FFFFFF" stroke-opacity="0.11" stroke-width="9" stroke-linecap="round"/>
+    <line x1="322" y1="628" x2="596" y2="628" stroke="#FFFFFF" stroke-opacity="0.11" stroke-width="9" stroke-linecap="round"/>
+
+    <!-- clap stick: white base with dark diagonal stripes -->
+    <g clip-path="url(#stickclip)">
+      <rect x="270" y="312" width="484" height="116" fill="#EEF1F8"/>
+      <g fill="#161B27">
+        <polygon points="230,428 278,428 342,312 294,312"/>
+        <polygon points="326,428 374,428 438,312 390,312"/>
+        <polygon points="422,428 470,428 534,312 486,312"/>
+        <polygon points="518,428 566,428 630,312 582,312"/>
+        <polygon points="614,428 662,428 726,312 678,312"/>
+        <polygon points="710,428 758,428 822,312 774,312"/>
+      </g>
+    </g>
+    <!-- hinge knob where the stick meets the board -->
+    <circle cx="300" cy="440" r="15" fill="#C7CEE0"/>
+  </g>
+</svg>

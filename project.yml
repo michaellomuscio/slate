@@ -9,14 +9,15 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"            # Swift 5 language mode (compiler is 6.3) — avoids strict-concurrency churn on v1
-    MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "0.2.0"
+    CURRENT_PROJECT_VERSION: "2"
     PRODUCT_BUNDLE_IDENTIFIER: com.lomusciolabs.slate
     CODE_SIGN_STYLE: Automatic
     ENABLE_HARDENED_RUNTIME: YES    # required for notarization; needs NO extra entitlements for
                                     # Slate (ScreenCaptureKit + Accessibility are TCC-gated, camera/
                                     # mic ride the Info.plist usage strings, no JIT/dylib injection)
     DEAD_CODE_STRIPPING: YES
+    ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon   # Slate/Assets.xcassets/AppIcon.appiconset
 
 targets:
   Slate:
