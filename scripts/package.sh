@@ -80,11 +80,13 @@ if [ "$NOTARIZE" = "1" ] && xcrun notarytool history --keychain-profile "$NOTARY
   ditto -c -k --keepParent "$APP" "$ZIP"
   xcrun notarytool submit "$ZIP" --keychain-profile "$NOTARY_PROFILE" --wait
   rm -f "$ZIP"
-  echo "▸ 6/6  Stapling ticket + building stapled DMG…"
-  xcrun stapler staple "$APP"
+  echo "▸ 6/6  Stapling app, building + notarizing DMG…"
+  xcrun stapler staple "$APP"          # offline-valid app (survives copy-out of the DMG)
   build_dmg
-  xcrun stapler staple "$DMG" || true
-  echo "✓ Notarized + stapled."
+  # The DMG needs its OWN notarization to be staple-able; the app inside is already stapled.
+  xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
+  xcrun stapler staple "$DMG"
+  echo "✓ Notarized + stapled (app and DMG)."
 else
   if [ "$NOTARIZE" = "1" ]; then
     echo "▸ (skipping notarization — no keychain profile '$NOTARY_PROFILE'.)"
