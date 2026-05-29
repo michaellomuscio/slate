@@ -60,6 +60,47 @@ class Bundle:
     def to_global(self, key, local_t):
         return local_t + self.offset(key)
 
+    # ---- stream extents (one authoritative timeline) -----------------------
+    def present_streams(self):
+        """Keys of streams whose file actually exists on disk."""
+        return [k for k in ("screen", "camera", "audio") if self.stream_path(k)]
+
+    def stream_end(self, key):
+        """Global time at which a stream's content ends = offset + file duration.
+        None if the stream/file is absent."""
+        p = self.stream_path(key)
+        if not p:
+            return None
+        return self.offset(key) + probe_duration(p)
+
+    def timeline_end(self):
+        """The one authoritative end of the take: the EARLIEST stream end among
+        present streams. Past this instant at least one track has run out, so
+        seeking it would read past EOF — every consumer should stop here. Falls
+        back to 0.0 if nothing is present."""
+        ends = [self.stream_end(k) for k in self.present_streams()]
+        ends = [e for e in ends if e is not None]
+        return min(ends) if ends else 0.0
+
+    def timeline_start(self):
+        """Earliest global time at which the PRIMARY streams (screen + audio) BOTH exist.
+        Before this, nothing was captured yet (record was pressed but the first frame/sample
+        hadn't arrived), so the editable timeline begins here. Seeking earlier would clamp
+        to_local() to 0 and duplicate/early-shift content at the boundary. The camera is not
+        a primary stream — its later warm-up is handled by camera_live_at()."""
+        offs = [self.offset(k) for k in ("screen", "audio") if self.stream_path(k)]
+        return max(offs) if offs else 0.0
+
+    def camera_live_at(self, global_t):
+        """True once real camera frames exist at this global time. Before the
+        camera's startOffset there is no footage (warm-up), so the PIP must be
+        suppressed rather than seeking the camera to a frozen frame 0."""
+        if not self.stream_path("camera"):
+            return False
+        start = self.offset("camera")
+        end = self.stream_end("camera")
+        return global_t >= start and (end is None or global_t < end)
+
     # ---- events ------------------------------------------------------------
     def events(self):
         p = self.file("events.jsonl")

@@ -3,10 +3,22 @@ import CoreMedia
 import CoreGraphics
 
 /// Builds an `AVMutableComposition` (+ optional video composition for camera PIP) that
-/// plays a Slate take with all three streams aligned by their `startOffset`s on the
-/// shared global clock. This is what makes "screen + camera + audio in one synced
-/// playback" possible — exactly the alignment guarantee meta.json was designed for.
+/// plays a Slate take with all streams aligned by their `startOffset`s on the shared global
+/// clock. This is what makes "screen + camera + audio in one synced playback" possible.
+///
+/// Two alignment rules keep the PREVIEW honest against the final render:
+///  - HEAD SHIFT: everything is shifted so the earliest stream sits at composition t=0, so
+///    there's no black/silent lead-in before the first captured frame (which the renderer
+///    also omits — it pulls each file from its own local 0).
+///  - MIN END: playback ends at the EARLIEST stream end (same authoritative end the renderer
+///    uses), so preview length matches final length instead of running on a frozen frame.
 enum CompositionBuilder {
+
+    struct NoMediaError: LocalizedError {
+        var errorDescription: String? {
+            "This take has no readable video (screen.mov / camera.mov missing or unreadable)."
+        }
+    }
 
     static func build(_ bundle: TakeBundle) async throws
         -> (composition: AVMutableComposition,
@@ -16,70 +28,74 @@ enum CompositionBuilder {
         let comp = AVMutableComposition()
         let renderSize = CGSize(width: bundle.meta.display.pixelWidth,
                                 height: bundle.meta.display.pixelHeight)
+
+        // Gather present streams with their global offsets, so we can compute the head shift.
+        struct Plan { let url: URL; let media: AVMediaType; let offset: Double; let key: String }
+        var plans: [Plan] = []
+        if let u = bundle.screenURL { plans.append(.init(url: u, media: .video,
+            offset: bundle.meta.streams["screen"]?.startOffset ?? 0, key: "screen")) }
+        if let u = bundle.cameraURL { plans.append(.init(url: u, media: .video,
+            offset: bundle.meta.streams["camera"]?.startOffset ?? 0, key: "camera")) }
+        if let u = bundle.audioURL { plans.append(.init(url: u, media: .audio,
+            offset: bundle.meta.streams["audio"]?.startOffset ?? 0, key: "audio")) }
+
+        let headOffset = plans.map(\.offset).min() ?? 0
+
+        var screenTrack: AVMutableCompositionTrack?
+        var cameraTrack: AVMutableCompositionTrack?
+        var insertedVideo = false
+        var minEnd = CMTime.positiveInfinity
         var maxEnd = CMTime.zero
 
-        // Helper: load asset's primary track of `mediaType`, add a matching comp track,
-        // and insert the asset at the requested global-timeline offset.
-        @Sendable func insert(url: URL, mediaType: AVMediaType, offset: Double) async throws
-            -> AVMutableCompositionTrack?
-        {
-            let asset = AVURLAsset(url: url)
-            let tracks = try await asset.loadTracks(withMediaType: mediaType)
-            guard let assetTrack = tracks.first else { return nil }
+        for plan in plans {
+            let asset = AVURLAsset(url: plan.url)
+            let tracks = try await asset.loadTracks(withMediaType: plan.media)
+            guard let assetTrack = tracks.first else { continue }
             let dur = try await asset.load(.duration)
             guard let compTrack = comp.addMutableTrack(
-                withMediaType: mediaType, preferredTrackID: kCMPersistentTrackID_Invalid
-            ) else { return nil }
-            let start = CMTime(seconds: max(0, offset), preferredTimescale: 600)
+                withMediaType: plan.media, preferredTrackID: kCMPersistentTrackID_Invalid
+            ) else { continue }
+            // Shift onto the composition timeline so the earliest stream is at t=0.
+            let start = CMTime(seconds: max(0, plan.offset - headOffset), preferredTimescale: 600)
             try compTrack.insertTimeRange(
-                CMTimeRange(start: .zero, duration: dur),
-                of: assetTrack, at: start)
+                CMTimeRange(start: .zero, duration: dur), of: assetTrack, at: start)
             let end = CMTimeAdd(start, dur)
             if CMTimeCompare(end, maxEnd) > 0 { maxEnd = end }
-            return compTrack
+            if CMTimeCompare(end, minEnd) < 0 { minEnd = end }
+            if plan.media == .video {
+                insertedVideo = true
+                if plan.key == "screen" { screenTrack = compTrack } else { cameraTrack = compTrack }
+            }
         }
 
-        var screenTrack: AVMutableCompositionTrack? = nil
-        var cameraTrack: AVMutableCompositionTrack? = nil
+        // A bundle whose media is missing/unreadable would otherwise build a silent black
+        // composition indistinguishable from a real black video — surface it as an error.
+        guard insertedVideo else { throw NoMediaError() }
 
-        if let url = bundle.screenURL {
-            screenTrack = try await insert(
-                url: url, mediaType: .video,
-                offset: bundle.meta.streams["screen"]?.startOffset ?? 0)
-        }
-        if let url = bundle.cameraURL {
-            cameraTrack = try await insert(
-                url: url, mediaType: .video,
-                offset: bundle.meta.streams["camera"]?.startOffset ?? 0)
-        }
-        if let url = bundle.audioURL {
-            _ = try await insert(
-                url: url, mediaType: .audio,
-                offset: bundle.meta.streams["audio"]?.startOffset ?? 0)
-        }
+        // Play to the earliest stream end (matches the renderer's authoritative timeline_end);
+        // fall back to maxEnd if min wasn't set.
+        let playEnd = (CMTimeCompare(minEnd, .positiveInfinity) < 0 && CMTimeCompare(minEnd, .zero) > 0)
+            ? minEnd : maxEnd
 
-        // Video composition — needed iff we have screen video. Layer-instruction order
-        // is back-to-front, so we put camera LAST so it renders on top of screen.
-        var videoComp: AVMutableVideoComposition? = nil
+        var videoComp: AVMutableVideoComposition?
         if let st = screenTrack {
             let vc = AVMutableVideoComposition()
             vc.renderSize = renderSize
-            vc.frameDuration = CMTime(value: 1, timescale: CMTimeScale(bundle.meta.fps))
+            vc.frameDuration = CMTime(value: 1, timescale: CMTimeScale(max(1, bundle.meta.fps)))
 
             let instr = AVMutableVideoCompositionInstruction()
-            instr.timeRange = CMTimeRange(start: .zero, duration: maxEnd)
+            instr.timeRange = CMTimeRange(start: .zero, duration: playEnd)
 
             var layers: [AVMutableVideoCompositionLayerInstruction] = []
-
             let screenLI = AVMutableVideoCompositionLayerInstruction(assetTrack: st)
             screenLI.setTransform(.identity, at: .zero)
             layers.append(screenLI)
 
+            // Camera PIP, bottom-right at ~18% of height (transform verified correct).
             if let ct = cameraTrack {
                 let camStream = bundle.meta.streams["camera"]
                 let camW = Double(camStream?.width ?? 640)
                 let camH = Double(camStream?.height ?? 480)
-                // Bottom-right PIP at ~18% of height.
                 let pipH = Double(renderSize.height) * 0.18
                 let scale = pipH / max(1.0, camH)
                 let scaledW = camW * scale
@@ -91,7 +107,7 @@ enum CompositionBuilder {
                                           tx: CGFloat(tx), ty: CGFloat(ty))
                 let camLI = AVMutableVideoCompositionLayerInstruction(assetTrack: ct)
                 camLI.setTransform(t, at: .zero)
-                layers.append(camLI)
+                layers.append(camLI)        // last = drawn on top of screen
             }
 
             instr.layerInstructions = layers
@@ -99,6 +115,6 @@ enum CompositionBuilder {
             videoComp = vc
         }
 
-        return (comp, videoComp, maxEnd)
+        return (comp, videoComp, playEnd)
     }
 }

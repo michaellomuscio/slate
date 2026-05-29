@@ -95,7 +95,14 @@ final class CameraAudioRecorder: NSObject,
 
     private func handleVideo(_ sb: CMSampleBuffer) {
         let pts = CMSampleBufferGetPresentationTimeStamp(sb)
-        if videoWriter == nil { startVideoWriter(with: sb, at: pts) }
+        if videoWriter == nil {
+            // Measure the offset at the instant the first sample ARRIVES — before the
+            // synchronous writer setup (which adds a few ms of disk/encoder latency that
+            // would otherwise bias this stream late vs the others). Matches how screen and
+            // audio are measured, so all three offsets are read the same way.
+            cameraStartOffset = HostClock.now() - t0
+            startVideoWriter(with: sb, at: pts)
+        }
         if let input = videoInput, videoWriter?.status == .writing, input.isReadyForMoreMediaData {
             input.append(sb)
         }
@@ -103,7 +110,10 @@ final class CameraAudioRecorder: NSObject,
 
     private func handleAudio(_ sb: CMSampleBuffer) {
         let pts = CMSampleBufferGetPresentationTimeStamp(sb)
-        if audioWriter == nil { startAudioWriter(with: sb, at: pts) }
+        if audioWriter == nil {
+            audioStartOffset = HostClock.now() - t0
+            startAudioWriter(with: sb, at: pts)
+        }
         if let input = audioInput, audioWriter?.status == .writing, input.isReadyForMoreMediaData {
             input.append(sb)
         }
@@ -129,7 +139,6 @@ final class CameraAudioRecorder: NSObject,
             writer.startSession(atSourceTime: pts)
             videoWriter = writer
             videoInput = input
-            cameraStartOffset = HostClock.now() - t0
         } catch {
             NSLog("Slate: camera writer error: \(error.localizedDescription)")
         }
@@ -161,7 +170,6 @@ final class CameraAudioRecorder: NSObject,
             writer.startSession(atSourceTime: pts)
             audioWriter = writer
             audioInput = input
-            audioStartOffset = HostClock.now() - t0
         } catch {
             NSLog("Slate: audio writer error: \(error.localizedDescription)")
         }

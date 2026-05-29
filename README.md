@@ -14,8 +14,18 @@ That bundle is the contract a downstream editing pipeline (transcription → edi
 
 ## Status
 
-**v0.1 — recorder only.** Records the bundle. No in-app editing (editing lives in Claude
-Code, operating on the bundle).
+**v0.2 — recorder + editing pipeline + in-app review.** The app records the bundle and lets
+you review takes (synced screen + camera + captions). Editing lives in **Claude Code**,
+operating on the bundle: transcribe → propose an edit → render. See **`WORKFLOW.md`** for the
+full loop and **`EDIT_SCHEMA.md`** for the edit format.
+
+- **Transcription:** ElevenLabs Scribe by default (verbatim — keeps "um/uh" with word
+  timestamps), local whisper as an offline fallback. Quiet mics are auto-normalized.
+- **Editing:** `/slate [social|course]` runs ingest → understand → cut → render, narrated;
+  or step through `/slate-ingest`, `/slate-digest`, `/slate-strip-filler`, `/slate-cut`,
+  `/slate-render`.
+- **Packaging:** `scripts/package.sh` produces a Developer-ID-signed, standalone
+  `Slate.app` + DMG (no Xcode needed to run it).
 
 ## Build
 

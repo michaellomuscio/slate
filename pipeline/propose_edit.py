@@ -40,12 +40,14 @@ def merge(intervals):
     return out
 
 
-def partition(duration, cuts, op):
-    """Turn cut intervals into a full timeline of keep/<op> segments covering [0,duration]."""
+def partition(start, duration, cuts, op):
+    """Turn cut intervals into a full timeline of keep/<op> segments covering
+    [start, duration]. `start` is the take's timeline_start (where the primary streams
+    exist), so the EDL never addresses the pre-capture head."""
     timeline = []
-    t = 0.0
+    t = start
     for s, e, why in cuts:
-        s = max(0.0, s); e = min(duration, e)
+        s = max(start, s); e = min(duration, e)
         if e <= s:
             continue
         if s > t + 1e-3:
@@ -87,15 +89,21 @@ def main():
         if ce - cs >= args.min_cut:
             cuts.append((round(cs, 3), round(ce, 3), "dead air"))
 
-    # 2. Explicit filler tokens (when whisper kept them).
+    # 2. Explicit filler tokens — now the PRIMARY signal with a verbatim backend
+    #    (ElevenLabs keeps "um"/"uh"), word-accurate via real token boundaries.
     for w in tr.get("words", []):
         bare = re.sub(r"[^a-z]", "", w["w"].lower())
         if bare in FILLERS:
             cuts.append((round(w["start"] - 0.05, 3), round(w["end"] + 0.05, 3),
                          "filler: %s" % w["w"]))
 
+    # 3. Voiced gaps with no transcript — fillers a backend dropped but that still made
+    #    sound (the acoustic cross-check). Mostly empty when ElevenLabs ran.
+    for d in tr.get("disfluencies", []):
+        cuts.append((round(d["start"] - 0.03, 3), round(d["end"] + 0.03, 3), "disfluency"))
+
     cuts = merge(cuts)
-    timeline = partition(duration, cuts, args.mode)
+    timeline = partition(b.timeline_start(), duration, cuts, args.mode)
 
     # 3. Auto-zoom toward clicks (px,py = display-local pixels onto screen.mov).
     zooms = []

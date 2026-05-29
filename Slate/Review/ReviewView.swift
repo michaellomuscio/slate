@@ -121,20 +121,29 @@ struct ReviewView: View {
         loadError = nil
         do {
             let (comp, vc, _) = try await CompositionBuilder.build(bundle)
+            // The build is fully async; if the user picked another take while we awaited,
+            // this task was cancelled — bail BEFORE writing any state, or a stale load would
+            // clobber the new take's player and leak a periodic time observer.
+            try Task.checkCancellation()
+
             let item = AVPlayerItem(asset: comp)
             if let vc { item.videoComposition = vc }
             let p = AVPlayer(playerItem: item)
-            self.player = p
-            self.captions = CaptionsTrack.load(from: bundle)
-
-            // 10Hz time tick — fine for caption updates, cheap.
+            let caps = CaptionsTrack.load(from: bundle)
             let interval = CMTime(value: 1, timescale: 10)
-            self.timeObserver = p.addPeriodicTimeObserver(
-                forInterval: interval, queue: .main
-            ) { t in
+            let obs = p.addPeriodicTimeObserver(forInterval: interval, queue: .main) { t in
                 self.currentTime = CMTimeGetSeconds(t)
             }
+            guard !Task.isCancelled else {
+                p.removeTimeObserver(obs)
+                return
+            }
+            self.player = p
+            self.captions = caps
+            self.timeObserver = obs
             self.isLoading = false
+        } catch is CancellationError {
+            // Superseded by a newer selection — leave state to the load that replaced us.
         } catch {
             self.loadError = "Couldn't load this take: \(error.localizedDescription)"
             self.isLoading = false

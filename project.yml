@@ -13,7 +13,9 @@ settings:
     CURRENT_PROJECT_VERSION: "1"
     PRODUCT_BUNDLE_IDENTIFIER: com.lomusciolabs.slate
     CODE_SIGN_STYLE: Automatic
-    ENABLE_HARDENED_RUNTIME: NO     # off for local dev; turn ON when notarizing for distribution
+    ENABLE_HARDENED_RUNTIME: YES    # required for notarization; needs NO extra entitlements for
+                                    # Slate (ScreenCaptureKit + Accessibility are TCC-gated, camera/
+                                    # mic ride the Info.plist usage strings, no JIT/dylib injection)
     DEAD_CODE_STRIPPING: YES
 
 targets:

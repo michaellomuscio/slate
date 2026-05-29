@@ -8,6 +8,10 @@ import AVFoundation
 @MainActor
 final class RecordingCoordinator: ObservableObject {
 
+    /// The coordinator currently on screen, so the app-termination hook can finalize an
+    /// in-flight recording (write meta.json + close the writers) before the process exits.
+    static weak var active: RecordingCoordinator?
+
     // Devices / selection
     @Published var displays: [SCDisplay] = []
     @Published var cameras: [AVCaptureDevice] = []
@@ -136,11 +140,19 @@ final class RecordingCoordinator: ObservableObject {
             status = "Screen capture failed: \(error.localizedDescription)"
             events.stop()
             await camAudio?.stop(); camAudio = nil
+            // Don't leave a meta-less orphan folder — the pipeline treats any take-*/ without
+            // meta.json as a hard error, and it would clutter ~/Movies/Slate forever.
+            if let b = bundleURL { try? FileManager.default.removeItem(at: b) }
+            bundleURL = nil
+            displayInfo = nil
             return
         }
 
+        Self.active = self
         isRecording = true
-        status = "Recording…"
+        // Click capture needs Accessibility; without it the click-zoom track is silently empty.
+        status = axPerm ? "Recording…"
+            : "Recording… (no click tracking — grant Accessibility for click-driven zoom)"
         startElapsedTimer()
     }
 
@@ -152,6 +164,7 @@ final class RecordingCoordinator: ObservableObject {
         events.stop()
         writeMeta()
         isRecording = false
+        Self.active = nil
         lastBundleURL = bundleURL
         status = "Saved take to \(bundleURL?.lastPathComponent ?? "?")"
         camAudio = nil
