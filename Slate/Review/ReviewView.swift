@@ -24,7 +24,7 @@ struct ReviewView: View {
                     .aspectRatio(aspectRatio, contentMode: .fit)
 
                 if let player {
-                    VideoPlayer(player: player)
+                    PlayerView(player: player)
                         .aspectRatio(aspectRatio, contentMode: .fit)
                 }
 
@@ -157,5 +157,31 @@ struct ReviewView: View {
         timeObserver = nil
         player?.pause()
         player = nil
+    }
+}
+
+/// AppKit `AVPlayerView` wrapped for SwiftUI. We use this instead of SwiftUI's `VideoPlayer`
+/// because `VideoPlayer` (the `_AVKit_SwiftUI` view) crashes on macOS 26 during view-metadata
+/// instantiation the moment it's built — which took the whole app down when opening a take in
+/// the Library. `AVPlayerView` is the underlying AppKit control and is rock-solid.
+struct PlayerView: NSViewRepresentable {
+    let player: AVPlayer
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let v = AVPlayerView()
+        v.player = player
+        v.controlsStyle = .inline
+        v.videoGravity = .resizeAspect
+        v.allowsPictureInPicturePlayback = false
+        return v
+    }
+
+    func updateNSView(_ v: AVPlayerView, context: Context) {
+        if v.player !== player { v.player = player }
+    }
+
+    static func dismantleNSView(_ v: AVPlayerView, coordinator: ()) {
+        v.player?.pause()
+        v.player = nil
     }
 }
