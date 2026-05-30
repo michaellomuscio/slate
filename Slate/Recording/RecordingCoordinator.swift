@@ -210,6 +210,25 @@ final class RecordingCoordinator: ObservableObject {
 
     // MARK: Helpers
 
+    /// Hold the display (and system) awake for the whole recording. Without this, macOS
+    /// dims/sleeps the display after its idle timeout while the AI works silently and the
+    /// user isn't touching the trackpad — ScreenCaptureKit then stops delivering frames and
+    /// the screen track dies mid-take (camera + mic keep going), so the end of the recording
+    /// has no screen. Every screen recorder (Loom, OBS, Screen Studio) holds this assertion.
+    private func holdDisplayAwake() {
+        guard sleepAssertion == nil else { return }
+        sleepAssertion = ProcessInfo.processInfo.beginActivity(
+            options: [.idleDisplaySleepDisabled, .idleSystemSleepDisabled, .userInitiated],
+            reason: "Slate is recording the screen")
+    }
+
+    private func releaseDisplayAwake() {
+        if let a = sleepAssertion {
+            ProcessInfo.processInfo.endActivity(a)
+            sleepAssertion = nil
+        }
+    }
+
     private func startElapsedTimer() {
         elapsed = 0
         let timer = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
