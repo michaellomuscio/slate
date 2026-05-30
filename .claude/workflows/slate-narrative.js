@@ -7,11 +7,16 @@ export const meta = {
   ],
 }
 
-// args: { bundlePath, format: "social"|"course", targetSeconds: number }
-const bundle = (args && args.bundlePath) || ''
-const format = (args && args.format) || 'social'
-const target = (args && args.targetSeconds) || (format === 'social' ? 50 : 240)
-if (!bundle) throw new Error('slate-narrative: args.bundlePath is required')
+// Parameters. Prefer Workflow's `args` ({bundlePath, format, targetSeconds}); the BUNDLE
+// fallback below is rewritten per-run by /slate before invoking, so the script always has a
+// concrete path even if `args` plumbing is unavailable on a scriptPath re-invocation.
+const BUNDLE = '__SLATE_BUNDLE__'
+const FORMAT = '__SLATE_FORMAT__'
+const a = (args && args.bundlePath) ? args : {}
+const bundle = a.bundlePath || (BUNDLE.indexOf('__SLATE') === 0 ? '' : BUNDLE)
+const format = a.format || (FORMAT.indexOf('__SLATE') === 0 ? 'social' : FORMAT)
+const target = a.targetSeconds || (format === 'social' ? 50 : 240)
+if (!bundle) throw new Error('slate-narrative: bundlePath required (pass via args, or have /slate fill the BUNDLE constant)')
 
 const CONTEXT = `
 You are editing a screen-recording ("take") for ${format === 'social' ? 'a vertical SOCIAL clip (TikTok/Reels/Shorts)' : 'an online-COURSE module'}.

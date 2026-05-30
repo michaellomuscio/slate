@@ -23,19 +23,24 @@ only where noted:
      if it helps you reason).
    - If audio health is flagged TOO QUIET **and** there's no transcript, stop and tell me —
      the mic likely wasn't picking up; re-record or proceed visuals-only.
-3. **Propose the cut** — `python3 pipeline/propose_edit.py "<bundle>" [--mode silence if I asked]`.
-   - Then **do real editorial work** on `edit.json` (see `EDIT_SCHEMA.md`):
-     - Protect intentional/emphasis pauses — don't cut every silence to zero.
-     - Catch what detection can't: false starts ("so the— ok, the first thing"), repeated
-       takes, tangents. Add them as `cut` with a `reason`.
-     - For **social**: find the single strongest 30–60s complete thought with a hook; cut the
-       rest; `preset:"social"`. For **course**: keep the full clean walkthrough; remove dead
-       air/fillers/flubs; `preset:"course"`.
-     - Place `zooms` on the moments that matter (clicks from the event log, key reveals).
-     - Keep the timeline a gapless cover of `[0, duration]`.
-4. **Show me the plan** — original length, time removed, new length, the cut list with reasons,
-   and the narrative arc in a few bullets. **Wait for my OK.** (If I said "just do it" in the
-   notes, skip the wait.)
+3. **Choose the scenes — a real narrative process, not just "keep a strong 30–60s."** Run a
+   first pass with `python3 pipeline/propose_edit.py "<bundle>"` (cleans dead air/fillers),
+   then do the editorial judgment via the multi-lens panel (social-media + storytelling +
+   marketing experts → a showrunner). Reason through those lenses, or run the
+   `slate-narrative` workflow. **Non-negotiable rules (learned the hard way):**
+   - **A long mid-take silence is the AI working — NOT the end.** Cut the silence, KEEP the
+     good content after it. The PAYOFF (the result being shown/described) usually lives at the
+     very end, after the longest gap — re-read the transcript near the end and make sure the
+     payoff is in the cut. Never end on the tease. (The renderer freezes the last screen frame
+     for payoff narration that has no screen, so audio/camera-only payoffs still work.)
+   - **Judge as a stranger** who doesn't know what you're about to show — it must hook in the
+     first 2–3s, make sense as a story, and land a concrete takeaway.
+   - Catch false starts, repeats, rambles, over-explanation — cut with a `reason`. Place
+     `zooms` on key reveals/clicks. Keep the timeline a gapless cover of `[0, duration]`.
+4. **Show me the plan** — working title, one-sentence throughline, the narrative arc
+   beat-by-beat, the chosen spans with their role (hook/context/demo/payoff), original vs new
+   length, and explicit confirmation the **payoff is included**. **Wait for my OK.** (If I said
+   "just do it" in the notes, skip the wait.)
 5. **Render** — `python3 pipeline/render.py "<bundle>" --preset <target>` (suggest `--preview`
    first for a fast look). Report final vs source length, resolution, and that captions burned
    in (`final.srt` is also written). Then offer: `open "<bundle>/final.mp4"`.
