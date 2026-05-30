@@ -7,16 +7,21 @@
 Approach (the sync guarantee): the timeline is rendered SEGMENT BY SEGMENT. Each kept
 segment is cut from screen + audio together, so audio and video can never drift — a `cut`
 removes the same span from both; a `silence` keeps the video and swaps in silent audio of
-equal length. Each segment is bounded by an OUTPUT `-t` and `-fps_mode cfr` so a
-variable-frame-rate screen source can't over-run its audio (the bug that made skew
-accumulate across the concat). Zoom and the camera bubble are composited per segment; the
-segments are concatenated and the output audio is loudness-normalized; captions are remapped
-onto the resulting shorter timeline.
+equal length. Each segment is bounded by an OUTPUT `-t` + `-fps_mode cfr` so a VFR screen
+source can't over-run its audio. Intermediates use PCM-in-MKV (no AAC priming drift); the
+final pass re-encodes to AAC once and loudness-normalizes.
+
+Presets:
+  course  — 1920x1080 landscape. Full screen (letterboxed), camera as a corner bubble,
+            burned SRT captions.
+  social  — 1080x1920 vertical STACK: the FULL screen on top + the FULL camera below it
+            (neither cropped), with word-karaoke captions at the bottom. The go-to format.
 """
 from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
@@ -25,19 +30,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lib.bundle import Bundle, ffmpeg_cmd, ffmpeg_has_filter, fmt_ts_srt, probe_duration, run
 
 V_ENC_FINAL = ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20", "-preset", "veryfast"]
-# Broadcast-ish loudness for the final mix — also rescues a quiet mic in the output even
-# though the per-segment audio was cut from the raw (often too-quiet) take.
+V_ENC_SEG = ["-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "16"]
 LOUDNORM = "loudnorm=I=-16:TP=-1.5:LRA=11"
+STACK_BG = "0x161B27"   # slate background behind the stacked panels
 
-# Caption styling baked at burn time (ASS style attributes), tuned per preset.
-CAPTION_STYLES = {
-    "course": ("FontName=Helvetica,FontSize=22,PrimaryColour=&H00FFFFFF&,"
-               "BackColour=&H80000000&,BorderStyle=3,Outline=0,Shadow=0,"
-               "MarginV=48,Alignment=2,Bold=1"),
-    "social": ("FontName=Helvetica,FontSize=38,PrimaryColour=&H00FFFFFF&,"
-               "BackColour=&H80000000&,BorderStyle=3,Outline=0,Shadow=0,"
-               "MarginV=200,Alignment=2,Bold=1"),
-}
+# Burned-SRT styling for the course preset (ASS style attributes via the subtitles filter).
+COURSE_CAPTION_STYLE = ("FontName=Helvetica,FontSize=22,PrimaryColour=&H00FFFFFF&,"
+                        "BackColour=&H80000000&,BorderStyle=3,Outline=0,Shadow=0,"
+                        "MarginV=48,Alignment=2,Bold=1")
 
 
 def even(n):
@@ -51,14 +51,9 @@ def clamp(v, lo, hi):
 
 def zoom_pan_filter(W, H, Z, cx, cy, fps, t_into_zoom=0.0, zoom_total=1.0, ramp=0.35):
     """A `zoompan=…` that eases into a zoom toward (cx,cy) and back out, ramping over the
-    FULL zoom window (`zoom_total`) — even when a cut splits that window across several
-    rendered pieces. zoompan's `time` resets to 0 at the start of each piece, so absolute
-    progress through the zoom is `(t_into_zoom + time)`; easing over the whole window keeps
-    the magnification monotonic across joins instead of pulsing out→in at every cut.
-
-    Progress p ramps 0→1 over `ramp` s, holds at 1, ramps 1→0 over the last `ramp` s, then
-    smoothstepped s(p)=p²(3−2p). Zoom factor = 1+(Z−1)·s. (cx,cy) are in BASE-image pixels
-    (already scaled to W×H — the caller scales display coords for --preview)."""
+    FULL zoom window (`zoom_total`) even when a cut splits it across several pieces. zoompan's
+    `time` resets per piece, so absolute progress is `(t_into_zoom + time)`; easing over the
+    whole window keeps the magnification monotonic across joins instead of pulsing at cuts."""
     r = max(0.01, min(ramp, zoom_total / 2.0))
     T = "(%.4f+time)" % t_into_zoom
     p = "min(max(min(%s/%.4f,(%.4f-%s)/%.4f),0),1)" % (T, r, zoom_total, T, r)
@@ -97,20 +92,37 @@ def split_for_zoom(segments, zooms, extra_bounds=()):
     return pieces
 
 
-def render_segment(b, idx, piece, W, H, fps, cam, tmp, sx, sy):
+def extract_last_screen_frame(b, tmp):
+    """Grab the last real screen frame as a still, so pieces past the screen's end (a
+    sleep-killed / short screen track) can FREEZE on it instead of seeking past EOF. Returns
+    the PNG path or None."""
+    sp = b.stream_path("screen")
+    if not sp:
+        return None
+    out = tmp / "screen_last.png"
+    try:
+        run([ffmpeg_cmd(), "-y", "-sseof", "-0.5", "-i", str(sp), "-frames:v", "1", str(out)])
+        return out if out.exists() else None
+    except RuntimeError:
+        return None
+
+
+def render_segment(b, idx, piece, W, H, fps, cam, tmp, sx, sy, frozen_png=None):
+    """Render the SCREEN for one piece (W×H) + its audio, with optional zoom and an optional
+    corner camera bubble (`cam` dict, or None for screen-only — used by the stacked layout).
+    Past the screen's end (screen not live) the top freezes on `frozen_png` while the
+    narration keeps playing — so an audio/camera tail with no screen is still renderable."""
     dur = piece["end"] - piece["start"]
-    # Matroska + PCM audio for intermediates: PCM has NO encoder priming, so concatenating
-    # segments is sample-exact (per-segment AAC priming would otherwise add ~10ms each and
-    # drift audio behind video). Final pass re-encodes to AAC once.
-    out = tmp / ("seg_%04d.mkv" % idx)
+    out = tmp / ("seg_%04d.mkv" % idx)   # PCM-in-MKV: sample-exact concat, no AAC priming
 
-    # Camera only when real frames exist at this piece (suppress the warm-up window, where
-    # to_local would otherwise clamp to frame 0 and freeze/misalign the bubble).
     use_cam = cam if (cam and b.camera_live_at((piece["start"] + piece["end"]) / 2.0)) else None
+    screen_live = b.screen_live_at((piece["start"] + piece["end"]) / 2.0)
 
-    inputs = []
-    inputs += ["-ss", "%.3f" % b.to_local("screen", piece["start"]), "-t", "%.3f" % dur,
-               "-i", str(b.stream_path("screen"))]
+    if screen_live or not frozen_png:
+        inputs = ["-ss", "%.3f" % b.to_local("screen", piece["start"]), "-t", "%.3f" % dur,
+                  "-i", str(b.stream_path("screen"))]
+    else:
+        inputs = ["-loop", "1", "-t", "%.3f" % dur, "-i", str(frozen_png)]   # freeze last frame
     cam_in = None
     if use_cam:
         cam_in = 1
@@ -123,18 +135,16 @@ def render_segment(b, idx, piece, W, H, fps, cam, tmp, sx, sy):
         inputs += ["-ss", "%.3f" % b.to_local("audio", piece["start"]), "-t", "%.3f" % dur,
                    "-i", str(b.stream_path("audio"))]
 
-    # video filtergraph
     fc = ["[0:v]scale=%d:%d,setsar=1,fps=%d,setpts=PTS-STARTPTS[base0]" % (W, H, fps)]
     last = "base0"
     z = piece.get("zoom")
     if z:
         Z = max(1.01, float(z["scale"]))
-        # Display coords -> base-image coords (handles --preview's smaller base).
         cx, cy = float(z["x"]) * sx, float(z["y"]) * sy
         t_into = max(0.0, piece["start"] - float(z["start"]))
         z_total = max(0.01, float(z["end"]) - float(z["start"]))
-        chain = zoom_pan_filter(W, H, Z, cx, cy, fps, t_into_zoom=t_into, zoom_total=z_total)
-        fc.append("[%s]%s[zoomed]" % (last, chain))
+        fc.append("[%s]%s[zoomed]" % (last, zoom_pan_filter(W, H, Z, cx, cy, fps,
+                                                            t_into_zoom=t_into, zoom_total=z_total)))
         last = "zoomed"
     if use_cam:
         d = even(use_cam.get("size", 0.18) * H)
@@ -153,21 +163,83 @@ def render_segment(b, idx, piece, W, H, fps, cam, tmp, sx, sy):
     else:
         fc.append("[%s]copy[vout]" % last)
 
-    # OUTPUT -t + CFR: a VFR screen source clones its last sparse frame past `dur` without
-    # this, so video > audio per segment and the skew accumulates across the concat.
     cmd = ([ffmpeg_cmd(), "-y"] + inputs +
            ["-filter_complex", ";".join(fc), "-map", "[vout]", "-map", "%d:a" % a_idx,
-            "-t", "%.3f" % dur, "-fps_mode", "cfr", "-r", str(fps),
-            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "veryfast", "-crf", "16",
-            "-c:a", "pcm_s16le", "-ar", "48000", "-ac", "1", str(out)])
+            "-t", "%.3f" % dur, "-fps_mode", "cfr", "-r", str(fps)] + V_ENC_SEG +
+           ["-c:a", "pcm_s16le", "-ar", "48000", "-ac", "1", str(out)])
     run(cmd)
     return out
 
 
+def render_cam_segment(b, idx, piece, target_w, cam_h, fps, tmp):
+    """Render the FULL camera frame for one piece, scaled to `target_w`×`cam_h` (no crop),
+    no audio — the lower panel of the stacked layout. Slate-filled where the camera isn't
+    live yet (warm-up), so every segment has identical dimensions for the concat."""
+    dur = piece["end"] - piece["start"]
+    out = tmp / ("cam_%04d.mkv" % idx)
+    if b.stream_path("camera") and b.camera_live_at((piece["start"] + piece["end"]) / 2.0):
+        cmd = [ffmpeg_cmd(), "-y", "-ss", "%.3f" % b.to_local("camera", piece["start"]),
+               "-t", "%.3f" % dur, "-i", str(b.stream_path("camera")),
+               "-vf", "scale=%d:%d,setsar=1,fps=%d,setpts=PTS-STARTPTS" % (target_w, cam_h, fps),
+               "-an", "-t", "%.3f" % dur, "-fps_mode", "cfr", "-r", str(fps)] + V_ENC_SEG + [str(out)]
+    else:
+        cmd = [ffmpeg_cmd(), "-y", "-f", "lavfi",
+               "-i", "color=c=%s:s=%dx%d:r=%d" % (STACK_BG, target_w, cam_h, fps),
+               "-t", "%.3f" % dur, "-an"] + V_ENC_SEG + [str(out)]
+    run(cmd)
+    return out
+
+
+# Caption text cleanup — applies to the ON-SCREEN text only; the audio is never altered.
+# Standalone fillers are dropped; casual contractions are expanded so captions read polished.
+CAPTION_FILLERS = {"um", "uh", "uhm", "umm", "er", "erm", "ah", "hmm", "mm", "mhm"}
+CAPTION_EXPAND = {
+    "gonna": "going to", "wanna": "want to", "gotta": "got to", "kinda": "kind of",
+    "sorta": "sort of", "outta": "out of", "gimme": "give me", "lemme": "let me",
+    "dunno": "don't know", "tryna": "trying to", "yall": "you all", "gotcha": "got you",
+}
+
+
+def _clean_tokens(word):
+    """One transcript word -> list of cleaned display tokens (0 = drop a standalone filler,
+    2 = expand a contraction). Preserves leading capitalization and trailing punctuation."""
+    m = re.match(r"^([^\w]*)(.*?)([^\w]*)$", word, re.UNICODE)
+    pre, core, suf = m.group(1), m.group(2), m.group(3)
+    if not core:
+        return [word]
+    key = re.sub(r"[^a-z]", "", core.lower())
+    if key in CAPTION_FILLERS:
+        return []                                  # drop the filler and its punctuation
+    if key in CAPTION_EXPAND:
+        phrase = CAPTION_EXPAND[key].split()
+        if core[:1].isupper():
+            phrase[0] = phrase[0].capitalize()
+        phrase[0] = pre + phrase[0]
+        phrase[-1] = phrase[-1] + suf
+        return phrase
+    return [word]
+
+
+def clean_caption_words(words):
+    """Map verbatim transcript words -> cleaned caption tokens with timing. Expanded
+    contractions split the source word's duration so karaoke still highlights in order;
+    dropped fillers simply vanish from the text."""
+    out = []
+    for wd in words:
+        toks = _clean_tokens(wd.get("w", ""))
+        if not toks:
+            continue
+        s, e = wd["start"], wd["end"]
+        step = (e - s) / len(toks)
+        for i, t in enumerate(toks):
+            out.append({"w": t, "start": s + i * step, "end": s + (i + 1) * step})
+    return out
+
+
 def caption_cues(b, kept_segments, max_words=7, gap=0.6):
-    """Remap transcript words onto the post-cut timeline and group into cues — the shared
-    basis for both the .srt sidecar and the karaoke .ass. Each cue is a list of
-    (start, end, word) on the new (post-cut) timeline; words inside cut spans are dropped."""
+    """Remap CLEANED transcript words onto the post-cut timeline and group into cues — shared
+    by the .srt sidecar and the karaoke .ass. Each cue is a list of (start, end, word) on the
+    new timeline; words inside cut spans are dropped."""
     tr = b.load_transcript()
     if not tr:
         return []
@@ -183,7 +255,7 @@ def caption_cues(b, kept_segments, max_words=7, gap=0.6):
         return None
 
     cues, cur = [], []
-    for w in tr.get("words", []):
+    for w in clean_caption_words(tr.get("words", [])):
         ns, ne = remap(w["start"]), remap(w["end"])
         if ns is None or ne is None:
             if cur:
@@ -198,9 +270,8 @@ def caption_cues(b, kept_segments, max_words=7, gap=0.6):
 
 
 def build_srt(b, kept_segments):
-    cues = caption_cues(b, kept_segments)
     out = []
-    for i, cue in enumerate(cues, 1):
+    for i, cue in enumerate(caption_cues(b, kept_segments), 1):
         start = cue[0][0]
         end = max(c[1] for c in cue)
         text = " ".join(c[2] for c in cue).strip()
@@ -217,13 +288,15 @@ def _fmt_ts_ass(seconds):
     return "%d:%02d:%02d.%02d" % (h, m, s, cs)
 
 
-def build_ass_karaoke(b, kept_segments, ow, oh, font_size, margin_v):
-    """A karaoke (.ass) caption track: each spoken word highlights in turn (white →
-    bright, libass `\\k`). The punchy word-by-word style that reads well on social. Returns
-    the .ass text, or '' if there are no words."""
-    cues = caption_cues(b, kept_segments)
+def build_ass_karaoke(b, kept_segments, ow, oh, font_size, margin_v, max_words=4):
+    """A karaoke (.ass) caption track: each spoken word highlights in turn (white → yellow,
+    libass `\\k`), with a black outline so it reads on any background. Alignment 2 = bottom
+    center; `margin_v` is the distance up from the bottom edge. Short cues (`max_words`) +
+    side margins keep every line inside the frame for vertical video."""
+    cues = caption_cues(b, kept_segments, max_words=max_words)
     if not cues:
         return ""
+    side = even(ow * 0.06)   # L/R margin so libass wraps instead of overflowing the frame
     header = (
         "[Script Info]\n"
         "ScriptType: v4.00+\n"
@@ -234,11 +307,8 @@ def build_ass_karaoke(b, kept_segments, ow, oh, font_size, margin_v):
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, "
         "BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, "
         "BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n"
-        # PrimaryColour (sung) = bright yellow; SecondaryColour (unsung) = white; black
-        # outline (BorderStyle 1, Outline 3, Shadow 1) so it's readable on ANY screen content.
-        # Alignment 2 = bottom-center.
         "Style: Slate,Helvetica,%d,&H0000F4FF,&H00FFFFFF,&H00000000,&HA0000000,"
-        "-1,0,0,0,100,100,0,0,1,3,1,2,80,80,%d,1\n\n"
+        "-1,0,0,0,100,100,0,0,1,3,1,2,60,60,%d,1\n\n"
         "[Events]\n"
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
     ) % (ow, oh, int(font_size), int(margin_v))
@@ -250,12 +320,97 @@ def build_ass_karaoke(b, kept_segments, ow, oh, font_size, margin_v):
         parts = []
         for i, (ws, we, word) in enumerate(cue):
             nxt = cue[i + 1][0] if i + 1 < len(cue) else we
-            k = max(1, int(round((nxt - ws) * 100)))      # centiseconds this word is active
+            k = max(1, int(round((nxt - ws) * 100)))
             parts.append("{\\k%d}%s" % (k, word.replace("{", "(").replace("}", ")")))
-        text = " ".join(parts)
-        lines.append("Dialogue: 0,%s,%s,Slate,,0,0,0,,%s"
-                     % (_fmt_ts_ass(start), _fmt_ts_ass(end), text))
+        lines.append("Dialogue: 0,%s,%s,Slate,,%d,%d,0,,%s"
+                     % (_fmt_ts_ass(start), _fmt_ts_ass(end), side, side, " ".join(parts)))
     return header + "\n".join(lines) + "\n"
+
+
+def render_social_stacked(b, pieces, kept, W, H, fps, cam_cfg, sx, sy, tmp, preview):
+    """Vertical 9:16 STACK: full screen on top, full camera below, captions at the bottom.
+    Both panels keep their full aspect ratio (no cropping). Returns (final_path, ow, oh, cap_desc)."""
+    ow, oh = (1080, 1920)
+    if preview:
+        ow, oh = even(ow / 2), even(oh / 2)
+
+    sw_src, sh_src = b.stream("screen")["width"], b.stream("screen")["height"]
+    panel_sh = even(ow * sh_src / sw_src)                       # screen panel height at full width
+    cam_present = bool(cam_cfg) and b.stream_path("camera")
+    if cam_present:
+        cw_src, ch_src = b.stream("camera")["width"], b.stream("camera")["height"]
+        panel_ch = even(ow * ch_src / cw_src)                  # camera panel height at full width
+    else:
+        panel_ch = 0
+
+    top = even(oh * 0.03)
+    gap = even(oh * 0.012)
+    cam_y = top + panel_sh + gap
+
+    # Render screen-only segments (+ audio) and full-frame camera segments.
+    frozen = extract_last_screen_frame(b, tmp)   # freeze the top panel past the screen's end
+    screen_files, cam_files = [], []
+    print("Rendering %d segment(s) (screen + camera panels)…" % len(pieces))
+    for i, p in enumerate(pieces):
+        screen_files.append(render_segment(b, i, p, W, H, fps, None, tmp, sx, sy, frozen_png=frozen))
+        if cam_present:
+            cam_files.append(render_cam_segment(b, i, p, ow, panel_ch, fps, tmp))
+
+    slist = tmp / "screen.txt"; slist.write_text("".join("file '%s'\n" % f for f in screen_files))
+    clist = tmp / "cam.txt";    clist.write_text("".join("file '%s'\n" % f for f in cam_files))
+
+    # Captions in the lower zone (lifted off the very bottom edge to clear platform UI/safe-area).
+    margin_v = even(oh * 0.12)
+    font = even(oh * 0.046)
+    ass_text = build_ass_karaoke(b, kept, ow, oh, font, margin_v) if ffmpeg_has_filter("ass") else ""
+    cap_desc = "final.srt (sidecar)"
+
+    fc = "[0:v]scale=%d:%d,setsar=1,pad=%d:%d:0:%d:color=%s[base]" % (ow, panel_sh, ow, oh, top, STACK_BG)
+    inputs = ["-f", "concat", "-safe", "0", "-i", str(slist)]
+    if cam_present:
+        inputs += ["-f", "concat", "-safe", "0", "-i", str(clist)]
+        fc += ";[1:v]scale=%d:%d,setsar=1[cam];[base][cam]overlay=0:%d[stk]" % (ow, panel_ch, cam_y)
+        last = "stk"
+    else:
+        fc += ";[base]copy[stk]"
+        last = "stk"
+    if ass_text:
+        (b.path / "final.ass").write_text(ass_text)
+        fc += ";[%s]ass=filename='%s'[v]" % (last, str(b.path / "final.ass"))
+        last = "v"
+        cap_desc = "final.ass word-karaoke at the bottom (burned in)"
+
+    final = b.path / "final.mp4"
+    run([ffmpeg_cmd(), "-y"] + inputs +
+        ["-filter_complex", fc, "-map", "[%s]" % last, "-map", "0:a", "-af", LOUDNORM] +
+        V_ENC_FINAL + ["-c:a", "aac", "-ar", "48000", str(final)])
+    return final, ow, oh, cap_desc
+
+
+def render_course(b, pieces, kept, W, H, fps, cam_cfg, sx, sy, tmp, preview):
+    """1920x1080 landscape: full screen (letterboxed) + corner camera bubble + burned SRT."""
+    ow, oh = (1920, 1080)
+    if preview:
+        ow, oh = even(ow / 2), even(oh / 2)
+    frozen = extract_last_screen_frame(b, tmp)
+    seg_files = []
+    print("Rendering %d segment(s)…" % len(pieces))
+    for i, p in enumerate(pieces):
+        seg_files.append(render_segment(b, i, p, W, H, fps, cam_cfg, tmp, sx, sy, frozen_png=frozen))
+    listfile = tmp / "list.txt"
+    listfile.write_text("".join("file '%s'\n" % f for f in seg_files))
+
+    vf = ("scale=%d:%d:force_original_aspect_ratio=decrease,"
+          "pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black" % (ow, oh, ow, oh))
+    cap_desc = "final.srt (sidecar)"
+    if bool(b.load_edit().get("captions", {}).get("burn")) and ffmpeg_has_filter("subtitles"):
+        vf += ",subtitles=filename='%s':force_style='%s'" % (str(b.path / "final.srt"), COURSE_CAPTION_STYLE)
+        cap_desc = "final.srt (burned in)"
+
+    final = b.path / "final.mp4"
+    run([ffmpeg_cmd(), "-y", "-f", "concat", "-safe", "0", "-i", str(listfile),
+         "-vf", vf, "-af", LOUDNORM] + V_ENC_FINAL + ["-c:a", "aac", "-ar", "48000", str(final)])
+    return final, ow, oh, cap_desc
 
 
 def main():
@@ -278,82 +433,37 @@ def main():
     W, H = screen_w, screen_h
     if args.preview:
         W, H = even(W / 2), even(H / 2)
-    sx, sy = W / float(screen_w), H / float(screen_h)   # display px -> base px (for zoom center)
-    # meta.fps is a CAP, not a real cadence: ScreenCaptureKit is variable-frame-rate and only
-    # delivers on screen change (~14 fps observed), so rendering at 60 just clones frames into
-    # a bloated file. 30 fps CFR is plenty for a screencast and keeps sizes sane.
+    sx, sy = W / float(screen_w), H / float(screen_h)
+    # meta.fps is a CAP: ScreenCaptureKit is VFR and only delivers on screen change, so
+    # rendering at 60 just clones frames into a bloated file. 30 fps CFR is plenty.
     fps = min(b.fps, 30)
 
     kept = [s for s in edit["timeline"] if s["op"] != "cut"]
-    # Clip to where the primary streams actually exist so we never seek before a stream
-    # started (which clamps to local 0 and duplicates content) or past any stream's EOF.
     ts, te = b.timeline_start(), b.timeline_end()
-    clipped = []
-    for s in kept:
-        a, c = max(s["start"], ts), min(s["end"], te)
-        if c - a > 0.01:
-            clipped.append({**s, "start": round(a, 3), "end": round(c, 3)})
-    kept = clipped
+    kept = [{**s, "start": round(max(s["start"], ts), 3), "end": round(min(s["end"], te), 3)}
+            for s in kept if min(s["end"], te) - max(s["start"], ts) > 0.01]
     if not kept:
         raise SystemExit("Timeline removes everything — nothing to render.")
-    zooms = [] if args.no_zoom else edit.get("zooms", [])
-    cam = edit.get("camera", {}) if not args.no_camera else {}
-    cam = cam if cam.get("enabled") and b.stream_path("camera") else None
 
-    extra_bounds = [b.offset("camera")] if cam else []
-    pieces = split_for_zoom(kept, zooms, extra_bounds)
+    zooms = [] if args.no_zoom else edit.get("zooms", [])
+    cam_cfg = edit.get("camera", {}) if not args.no_camera else {}
+    cam_cfg = cam_cfg if cam_cfg.get("enabled") and b.stream_path("camera") else None
+    # Split at each stream's live/frozen boundary so a piece never straddles one (camera
+    # warm-up start + camera end + screen end → clean freeze/suppress transitions).
+    bounds = [b.stream_end("screen")]
+    if cam_cfg:
+        bounds += [b.offset("camera"), b.stream_end("camera")]
+    pieces = split_for_zoom(kept, zooms, [x for x in bounds if x])
 
     with tempfile.TemporaryDirectory() as t:
         tmp = Path(t)
-        seg_files = []
-        print("Rendering %d segment(s)…" % len(pieces))
-        for i, p in enumerate(pieces):
-            seg_files.append(render_segment(b, i, p, W, H, fps, cam, tmp, sx, sy))
-
-        listfile = tmp / "list.txt"
-        listfile.write_text("".join("file '%s'\n" % f for f in seg_files))
-
-        # Framing target first (captions are composited after the frame is sized).
+        (b.path / "final.srt").write_text(build_srt(b, kept))    # sidecar always written
         if preset == "social":
-            ow, oh = (1080, 1920)
-            if args.preview:
-                ow, oh = even(ow / 2), even(oh / 2)
-            # COVER-crop to 9:16 (fill the frame, crop the overflow) — no black bars.
-            vf = ("scale=%d:%d:force_original_aspect_ratio=increase,"
-                  "crop=%d:%d" % (ow, oh, ow, oh))
+            final, ow, oh, cap_desc = render_social_stacked(
+                b, pieces, kept, W, H, fps, cam_cfg, sx, sy, tmp, args.preview)
         else:
-            ow, oh = (1920, 1080)
-            if args.preview:
-                ow, oh = even(ow / 2), even(oh / 2)
-            vf = ("scale=%d:%d:force_original_aspect_ratio=decrease,"
-                  "pad=%d:%d:(ow-iw)/2:(oh-ih)/2:black" % (ow, oh, ow, oh))
-
-        # Captions: always write the .srt sidecar. If burn requested: social gets word-level
-        # KARAOKE (.ass, each word highlights as spoken — punchy for vertical); course gets a
-        # clean burned SRT. Falls back to the sidecar if libass is unavailable.
-        (b.path / "final.srt").write_text(build_srt(b, kept))
-        burn = False
-        cap_desc = "final.srt (sidecar — upload alongside the video)"
-        if bool(edit.get("captions", {}).get("burn")):
-            if preset == "social" and ffmpeg_has_filter("ass"):
-                ass_text = build_ass_karaoke(b, kept, ow, oh,
-                                             round(oh * 0.05), round(oh * 0.14))
-                if ass_text:
-                    (b.path / "final.ass").write_text(ass_text)
-                    vf += ",ass=filename='%s'" % str(b.path / "final.ass")
-                    burn = True
-                    cap_desc = "final.ass word-karaoke (burned in)"
-            if not burn and ffmpeg_has_filter("subtitles"):
-                style = CAPTION_STYLES.get(preset, CAPTION_STYLES["course"])
-                vf += ",subtitles=filename='%s':force_style='%s'" % (
-                    str(b.path / "final.srt"), style)
-                burn = True
-                cap_desc = "final.srt (burned in)"
-
-        final = b.path / "final.mp4"
-        run([ffmpeg_cmd(), "-y", "-f", "concat", "-safe", "0", "-i", str(listfile),
-             "-vf", vf, "-af", LOUDNORM] + V_ENC_FINAL +
-            ["-c:a", "aac", "-ar", "48000", str(final)])
+            final, ow, oh, cap_desc = render_course(
+                b, pieces, kept, W, H, fps, cam_cfg, sx, sy, tmp, args.preview)
 
     src_dur = (b.load_transcript() or {}).get("duration") or b.timeline_end()
     print("\nRendered:", final)

@@ -74,32 +74,43 @@ class Bundle:
         return self.offset(key) + probe_duration(p)
 
     def timeline_end(self):
-        """The one authoritative end of the take: the EARLIEST stream end among
-        present streams. Past this instant at least one track has run out, so
-        seeking it would read past EOF — every consumer should stop here. Falls
-        back to 0.0 if nothing is present."""
-        ends = [self.stream_end(k) for k in self.present_streams()]
-        ends = [e for e in ends if e is not None]
+        """The end of the take is the end of the NARRATION SPINE — the audio. The voice is
+        the story, so the editable timeline runs as long as there is talking, even if the
+        screen track died earlier (e.g. the display slept while the AI worked) or the camera
+        ran a hair longer. The renderer freezes the last screen frame past `screen`'s end
+        (screen_live_at) and suppresses the camera past its end, so audio-only tails are
+        still renderable. Falls back to the shortest present stream if there's no audio."""
+        a = self.stream_end("audio")
+        if a is not None:
+            return a
+        ends = [e for e in (self.stream_end(k) for k in self.present_streams()) if e is not None]
         return min(ends) if ends else 0.0
 
     def timeline_start(self):
-        """Earliest global time at which the PRIMARY streams (screen + audio) BOTH exist.
-        Before this, nothing was captured yet (record was pressed but the first frame/sample
-        hadn't arrived), so the editable timeline begins here. Seeking earlier would clamp
-        to_local() to 0 and duplicate/early-shift content at the boundary. The camera is not
-        a primary stream — its later warm-up is handled by camera_live_at()."""
+        """Earliest global time at which the narration AND a screen frame both exist — where
+        the editable timeline begins. Before this nothing usable was captured (record pressed
+        but first sample/frame not yet arrived); seeking earlier clamps to_local() to 0 and
+        duplicates/early-shifts content. Camera warm-up is handled by camera_live_at()."""
         offs = [self.offset(k) for k in ("screen", "audio") if self.stream_path(k)]
         return max(offs) if offs else 0.0
 
     def camera_live_at(self, global_t):
-        """True once real camera frames exist at this global time. Before the
-        camera's startOffset there is no footage (warm-up), so the PIP must be
-        suppressed rather than seeking the camera to a frozen frame 0."""
+        """True once real camera frames exist at this global time. Before the camera's
+        startOffset there is no footage (warm-up) and after its end there is none, so the
+        bubble/panel must be suppressed rather than seeking to a frozen frame."""
         if not self.stream_path("camera"):
             return False
-        start = self.offset("camera")
         end = self.stream_end("camera")
-        return global_t >= start and (end is None or global_t < end)
+        return global_t >= self.offset("camera") and (end is None or global_t < end)
+
+    def screen_live_at(self, global_t):
+        """True when real screen frames exist at this global time. Past the screen's end (a
+        sleep-killed or short screen track) the renderer freezes the last captured frame
+        instead of seeking past EOF."""
+        if not self.stream_path("screen"):
+            return False
+        end = self.stream_end("screen")
+        return global_t >= self.offset("screen") and (end is None or global_t < end)
 
     # ---- events ------------------------------------------------------------
     def events(self):
