@@ -42,6 +42,7 @@ final class RecordingCoordinator: ObservableObject {
     private var displayInfo: DisplayInfo?
     private var createdAt = ""
     private var elapsedTimer: Timer?
+    private var sleepAssertion: NSObjectProtocol?   // keeps the display awake while recording
 
     var canRecord: Bool { !isRecording && selectedDisplayID != nil && screenPerm }
 
@@ -130,6 +131,16 @@ final class RecordingCoordinator: ObservableObject {
             camAudio = ca
         }
 
+        // If the screen stream dies mid-take (e.g. the display slept), don't fail silently —
+        // camera + mic keep going, so tell the user the screen track ended early.
+        screen.onStreamStopped = { [weak self] error in
+            Task { @MainActor in
+                guard let self, self.isRecording else { return }
+                self.status = "⚠️ Screen capture stopped early (\(error.localizedDescription)). "
+                    + "Audio + camera are still recording — press Stop when you're done."
+            }
+        }
+
         do {
             try await screen.start(display: display,
                                    pixelWidth: info.pixelWidth, pixelHeight: info.pixelHeight,
@@ -149,6 +160,7 @@ final class RecordingCoordinator: ObservableObject {
         }
 
         Self.active = self
+        holdDisplayAwake()              // don't let the display sleep mid-take (kills screen capture)
         isRecording = true
         // Click capture needs Accessibility; without it the click-zoom track is silently empty.
         status = axPerm ? "Recording…"
@@ -158,6 +170,7 @@ final class RecordingCoordinator: ObservableObject {
 
     func stop() async {
         guard isRecording else { return }
+        releaseDisplayAwake()
         stopElapsedTimer()
         await screen.stop()
         await camAudio?.stop()

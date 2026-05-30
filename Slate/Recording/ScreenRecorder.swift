@@ -20,6 +20,12 @@ final class ScreenRecorder: NSObject, SCStreamDelegate, SCStreamOutput, SCRecord
     private(set) var pixelWidth: Int = 0
     private(set) var pixelHeight: Int = 0
 
+    /// Called if the stream stops on its own mid-recording (e.g. the display slept and
+    /// ScreenCaptureKit tore the stream down). Lets the coordinator warn the user instead of
+    /// silently ending the screen track while camera + mic keep going.
+    var onStreamStopped: ((Error) -> Void)?
+    private var stopping = false        // set when WE stop, to distinguish from an unexpected stop
+
     func start(display: SCDisplay,
                pixelWidth: Int,
                pixelHeight: Int,
@@ -31,6 +37,7 @@ final class ScreenRecorder: NSObject, SCStreamDelegate, SCStreamOutput, SCRecord
         self.pixelWidth = pixelWidth
         self.pixelHeight = pixelHeight
         firstFrameSeen = false
+        stopping = false
         startOffset = nil
 
         let config = SCStreamConfiguration()
@@ -65,6 +72,7 @@ final class ScreenRecorder: NSObject, SCStreamDelegate, SCStreamOutput, SCRecord
 
     func stop() async {
         guard let stream else { return }
+        stopping = true
         do { try await stream.stopCapture() }
         catch { NSLog("Slate: screen stopCapture error: \(error.localizedDescription)") }
         self.stream = nil
@@ -90,6 +98,7 @@ final class ScreenRecorder: NSObject, SCStreamDelegate, SCStreamOutput, SCRecord
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
         NSLog("Slate: screen stream stopped with error: \(error.localizedDescription)")
+        if !stopping { onStreamStopped?(error) }   // unexpected stop (e.g. display slept)
     }
 
     func recordingOutput(_ recordingOutput: SCRecordingOutput, didFailWithError error: Error) {
