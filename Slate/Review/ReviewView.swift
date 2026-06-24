@@ -305,19 +305,24 @@ final class ReviewPlayer: ObservableObject {
 }
 
 /// A thin `AVPlayerLayer`-backed view — used for both the full-screen video and the camera
-/// PIP. We use `AVPlayerLayer` (not SwiftUI `VideoPlayer` or `AVPlayerView`) so we control
-/// compositing and avoid the macOS 26 `VideoPlayer` crash / black-render issues entirely.
+/// PIP / Compose bubble. We use `AVPlayerLayer` (not SwiftUI `VideoPlayer` or `AVPlayerView`) so
+/// we control compositing and avoid the macOS 26 `VideoPlayer` crash / black-render issues
+/// entirely. `videoGravity` defaults to `.resizeAspect` (letterbox); the Compose head bubble
+/// passes `.resizeAspectFill` so a 16:9 camera cover-crops cleanly into a circle/square.
 struct PlayerLayerView: NSViewRepresentable {
     let player: AVPlayer
+    var videoGravity: AVLayerVideoGravity = .resizeAspect
 
     func makeNSView(context: Context) -> PlayerLayerHostView {
         let v = PlayerLayerHostView()
         v.playerLayer.player = player
+        v.playerLayer.videoGravity = videoGravity
         return v
     }
 
     func updateNSView(_ v: PlayerLayerHostView, context: Context) {
         if v.playerLayer.player !== player { v.playerLayer.player = player }
+        if v.playerLayer.videoGravity != videoGravity { v.playerLayer.videoGravity = videoGravity }
     }
 }
 
