@@ -56,6 +56,15 @@ record (Slate.app)  →  ~/Movies/Slate/take-…/     # screen.mov camera.mov au
 - **Sync is by construction.** Segments are cut from screen+audio together; intermediates are
   PCM-in-MKV (no AAC priming) with an output `-t` + `-fps_mode cfr` (a VFR screen can't
   over-run). Validated ~3 ms on a real take. Camera warm-up is gated by `camera_live_at()`.
+- **Teleprompter is hidden from the recording by app-exclusion, not by luck** (`Slate/Teleprompter/`,
+  added v0.3.0). The crawl lives in a borderless `NSPanel` *owned by Slate*, and the capture
+  filter is `SCContentFilter(display:excludingApplications:[Slate]…)` (`ScreenRecorder.swift`) —
+  ScreenCaptureKit excludes by **application**, so every Slate window (the panel included) is
+  composited out of `screen.mov` while staying on the physical display. The panel also sets
+  `sharingType = .none` as a capture-method-independent second guarantee (covers the filter's
+  no-app fallback path). It's `ignoresMouseEvents` (click-through) + `.nonactivatingPanel` (never
+  steals focus) at `.screenSaver` level on all spaces. If you ever stop excluding the Slate app
+  from the filter, the teleprompter would start showing up in recordings — keep the exclusion.
 
 ## Building / packaging the recorder app
 

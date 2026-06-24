@@ -9,8 +9,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"            # Swift 5 language mode (compiler is 6.3) — avoids strict-concurrency churn on v1
-    MARKETING_VERSION: "0.2.4"
-    CURRENT_PROJECT_VERSION: "6"
+    MARKETING_VERSION: "0.3.0"
+    CURRENT_PROJECT_VERSION: "7"
     PRODUCT_BUNDLE_IDENTIFIER: com.lomusciolabs.slate
     CODE_SIGN_STYLE: Automatic
     ENABLE_HARDENED_RUNTIME: YES    # required for notarization; needs NO extra entitlements for
@@ -18,6 +18,7 @@ settings:
                                     # mic ride the Info.plist usage strings, no JIT/dylib injection)
     DEAD_CODE_STRIPPING: YES
     ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon   # Slate/Assets.xcassets/AppIcon.appiconset
+    ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor   # Lomuscio Labs purple #7B2FBE
 
 targets:
   Slate:
