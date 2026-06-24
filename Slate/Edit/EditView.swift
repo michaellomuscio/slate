@@ -60,7 +60,6 @@ struct EditPane: View {
     @State private var loadError: String? = nil
     @State private var pendingCutStart: Double? = nil      // first click of a two-click cut
     @State private var previewSkip = true                  // playback skips cut/trim spans
-    @State private var preset = "course"
 
     @State private var rendering = false
     @State private var statusMsg: String? = nil
@@ -202,11 +201,6 @@ struct EditPane: View {
 
             Spacer()
 
-            Picker("", selection: $preset) {
-                Text("Course 16:9").tag("course")
-                Text("Social 9:16").tag("social")
-            }.labelsHidden().frame(width: 130).disabled(rendering)
-
             Button { save() } label: { Label("Save edit", systemImage: "square.and.arrow.down") }
                 .disabled(!rp.ready || rendering)
 
@@ -215,9 +209,8 @@ struct EditPane: View {
                 else { Label("Render", systemImage: "film") }
             }
             .buttonStyle(.borderedProminent)
-            .disabled(!rp.ready || rendering || !PipelineRunner.available)
-            .help(PipelineRunner.available ? "Save edit.json and render final.mp4"
-                  : "Pipeline not found at ~/projects/screen-recorder — run /slate-render instead")
+            .disabled(!rp.ready || rendering)
+            .help("Render the trimmed take to final.mp4 (screen + audio) — runs entirely in Slate, no setup.")
         }
         .overlay(alignment: .bottomLeading) {
             if let m = statusMsg {
@@ -258,20 +251,22 @@ struct EditPane: View {
         } catch {
             statusIsError = true; statusMsg = "Save failed: \(error.localizedDescription)"; return
         }
-        rendering = true; statusIsError = false; statusMsg = "Rendering final.mp4 with the pipeline…"
-        let b = bundle, pr = preset
+        rendering = true; statusIsError = false; statusMsg = "Rendering final.mp4…"
+        let b = bundle
+        let kept = decision.keptIntervals()
+        let length = tc(decision.keptDuration)
         Task {
             do {
-                try await PipelineRunner.render(bundle: b, preset: pr)
+                let url = try await NativeRenderer.render(bundle: b, kept: kept)
                 await MainActor.run {
                     rendering = false; statusIsError = false
-                    statusMsg = "Rendered final.mp4."
-                    NSWorkspace.shared.activateFileViewerSelecting([b.finalRenderURL])
+                    statusMsg = "Rendered final.mp4 (\(length))."
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
                 }
             } catch {
                 await MainActor.run {
                     rendering = false; statusIsError = true
-                    statusMsg = error.localizedDescription
+                    statusMsg = "Render failed: \(error.localizedDescription)"
                 }
             }
         }

@@ -1,4 +1,6 @@
 import Foundation
+import AVFoundation
+import CoreMedia
 
 /// A removed span on the global timeline (a "cut" / break the user marked).
 struct CutRange: Identifiable, Equatable {
@@ -80,6 +82,19 @@ final class EditDecision: ObservableObject {
         max(0, duration - removedIntervals().reduce(0) { $0 + ($1.1 - $1.0) })
     }
 
+    /// The surviving spans (complement of `removedIntervals` over `[0, duration]`), in order.
+    /// Empty only if the edit removes everything.
+    func keptIntervals() -> [(Double, Double)] {
+        var kept: [(Double, Double)] = []
+        var cursor = 0.0
+        for (s, e) in removedIntervals() {
+            if s > cursor { kept.append((cursor, s)) }
+            cursor = max(cursor, e)
+        }
+        if cursor < duration { kept.append((cursor, duration)) }
+        return kept
+    }
+
     /// For live preview: if `t` falls inside a removed span, the time playback should jump to.
     func skipTarget(at t: Double) -> Double? {
         for (s, e) in removedIntervals() where t >= s && t < e { return e }
@@ -130,44 +145,47 @@ final class EditDecision: ObservableObject {
     private func r3(_ x: Double) -> Double { (x * 1000).rounded() / 1000 }
 }
 
-/// Runs the Python render pipeline (`pipeline/render.py`) on a take, in-app. The pipeline
-/// isn't bundled with the app — it lives in the repo — so this is best-effort: enabled only
-/// when the repo is found on disk. Output is redirected to a temp log (no pipe-deadlock).
-enum PipelineRunner {
-    static func repoRoot() -> URL? {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let candidates = [home.appendingPathComponent("projects/screen-recorder")]
-        return candidates.first { FileManager.default.fileExists(atPath: $0.appendingPathComponent("pipeline/render.py").path) }
+/// Renders the edited take to `final.mp4` **natively, in-app** — no Python, no external
+/// ffmpeg, no repo dependency, so it just works wherever Slate is installed. It rebuilds the
+/// exact aligned screen+audio composition the editor played (`CompositionBuilder.master`,
+/// which has no `AVMutableVideoComposition`, so it dodges the macOS 26 black-render bug),
+/// keeps only the surviving spans, and exports with `AVAssetExportSession`. Sync is preserved
+/// by construction: each kept span copies video and audio together. This is a clean cut of
+/// the screencast (screen + audio); zoom-on-click, burned captions, camera PIP and loudness
+/// normalization remain the job of the full `/slate` pipeline.
+enum NativeRenderer {
+    static func render(bundle: TakeBundle, kept: [(Double, Double)]) async throws -> URL {
+        let r = try await CompositionBuilder.build(bundle)
+        guard r.hasScreenVideo || r.hasAudio else {
+            throw err("This take has no screen or audio to render.")
+        }
+
+        let out = AVMutableComposition()
+        let durSec = r.duration.seconds.isFinite ? r.duration.seconds : 0
+        var cursor = CMTime.zero
+        for (s, e) in kept {
+            let startSec = max(0, s), endSec = min(e, durSec)
+            guard endSec - startSec > 0.001 else { continue }
+            let range = CMTimeRange(start: CMTime(seconds: startSec, preferredTimescale: 600),
+                                    end: CMTime(seconds: endSec, preferredTimescale: 600))
+            try await out.insertTimeRange(range, of: r.master, at: cursor)
+            cursor = CMTimeAdd(cursor, range.duration)
+        }
+        guard cursor.seconds > 0.05 else {     // cursor == total inserted length (avoids async AVAsset.duration)
+            throw err("The edit removes everything — there's nothing left to render.")
+        }
+
+        let outURL = bundle.finalRenderURL
+        try? FileManager.default.removeItem(at: outURL)
+        guard let session = AVAssetExportSession(asset: out, presetName: AVAssetExportPresetHighestQuality) else {
+            throw err("Couldn't create the video exporter for this take.")
+        }
+        session.shouldOptimizeForNetworkUse = true
+        try await session.export(to: outURL, as: .mp4)
+        return outURL
     }
 
-    static var available: Bool { repoRoot() != nil }
-
-    static func render(bundle: TakeBundle, preset: String) async throws {
-        guard let root = repoRoot() else {
-            throw NSError(domain: "Slate", code: 1, userInfo: [NSLocalizedDescriptionKey:
-                "Pipeline not found. Run it yourself:  python3 pipeline/render.py \(bundle.id)"])
-        }
-        let logURL = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("slate-render-\(bundle.id).log")
-        FileManager.default.createFile(atPath: logURL.path, contents: nil)
-        let log = try FileHandle(forWritingTo: logURL)
-        defer { try? log.close() }
-
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/python3")
-        p.arguments = [root.appendingPathComponent("pipeline/render.py").path, bundle.path.path, "--preset", preset]
-        p.currentDirectoryURL = root
-        p.standardOutput = log
-        p.standardError = log
-
-        try p.run()
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            p.terminationHandler = { _ in cont.resume() }
-        }
-        if p.terminationStatus != 0 {
-            let tail = (try? String(contentsOf: logURL, encoding: .utf8))?.suffix(400) ?? ""
-            throw NSError(domain: "Slate", code: Int(p.terminationStatus),
-                          userInfo: [NSLocalizedDescriptionKey: "Render failed (exit \(p.terminationStatus)).\n\(tail)"])
-        }
+    private static func err(_ message: String) -> NSError {
+        NSError(domain: "Slate", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
     }
 }
