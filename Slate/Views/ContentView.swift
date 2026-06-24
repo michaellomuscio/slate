@@ -7,6 +7,8 @@ struct ContentView: View {
         TabView {
             RecordPanel()
                 .tabItem { Label("Record", systemImage: "record.circle") }
+            EditView()
+                .tabItem { Label("Edit", systemImage: "scissors") }
             LibraryView()
                 .tabItem { Label("Library", systemImage: "rectangle.stack") }
         }
