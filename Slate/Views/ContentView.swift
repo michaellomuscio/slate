@@ -1,12 +1,15 @@
 import SwiftUI
 import ScreenCaptureKit
 
-/// Top-level shell: two tabs — make a recording, or review the ones you already made.
+/// Top-level shell: four tabs — make a recording, compose a walkthrough, edit a take, or review
+/// the ones you already made.
 struct ContentView: View {
     var body: some View {
         TabView {
             RecordPanel()
                 .tabItem { Label("Record", systemImage: "record.circle") }
+            ComposeTab()
+                .tabItem { Label("Compose", systemImage: "person.crop.rectangle") }
             EditView()
                 .tabItem { Label("Edit", systemImage: "scissors") }
             LibraryView()

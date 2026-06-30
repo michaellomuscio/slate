@@ -80,3 +80,21 @@ sidecar. Upload targets (YouTube, LinkedIn, etc.) accept the `.srt` directly.
    wants the full clean walkthrough with chapters.
 4. Keep `reason` on every `cut`/`silence` — it's the audit trail, and it's how Michael
    sanity-checks the edit before rendering.
+
+## redactions  (Slate Edit tab)
+
+The Edit tab can also write a `redactions` array — resizable boxes that cover or
+blur part of the screen for a time window. Geometry is **fractional, top-left origin**
+(like `camera`/zoom anchors); `start`/`end` are on the **original take timeline** (author
+intent), remapped through the cuts only at render time.
+
+```jsonc
+"redactions": [
+  {"x": 0.05, "y": 0.05, "w": 0.30, "h": 0.20,   // normalized rect, top-left origin
+   "start": 0.0, "end": 3.0,                      // ORIGINAL take seconds
+   "blur": false, "color": "#000000"}             // blur=true → unreadable; else solid color
+]
+```
+
+The in-app native renderer paints these per-frame in Core Image (over the screen, under the
+camera bubble). `render.py` may honor the same fractional contract later.

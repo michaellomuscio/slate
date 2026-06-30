@@ -54,7 +54,8 @@ enum WalkthroughExporter {
     /// already-cut compositions so trims/cuts are baked in.
     static func render(screenAudio: AVAsset, camera: AVAsset?,
                        screenSize: CGSize, cameraSize: CGSize, hasAudio: Bool, duration: Double,
-                       layout: WalkthroughLayout, to outURL: URL,
+                       layout: WalkthroughLayout, redactions: [RenderRedaction] = [],
+                       to outURL: URL,
                        progress: @escaping @Sendable (Double) -> Void) async throws {
         guard let screenTrack = try await screenAudio.loadTracks(withMediaType: .video).first
         else { throw ExportError.noScreen }
@@ -141,7 +142,8 @@ enum WalkthroughExporter {
         writer.startSession(atSourceTime: .zero)
 
         let cameraAspect: CGFloat = cameraSize.height > 0 ? cameraSize.width / cameraSize.height : 16.0 / 9.0
-        let compositor = WalkthroughCompositor(outSize: outSize, layout: layout, cameraAspect: cameraAspect)
+        let compositor = WalkthroughCompositor(outSize: outSize, layout: layout,
+                                               cameraAspect: cameraAspect, redactions: redactions)
         let renderDuration = max(0.1, duration)
 
         // ---- pump video + audio, finish on completion -----------------------
@@ -211,7 +213,8 @@ enum WalkthroughExporter {
                     if t.seconds >= renderDuration { vIn.markAsFinished(); group.leave(); break }
                     autoreleasepool {
                         if let screen = screenFrame(atOrBefore: t), let pool = adaptor.pixelBufferPool,
-                           let outPix = compositor.makeFrame(screen: screen, camera: camFrame(atOrBefore: t), pool: pool) {
+                           let outPix = compositor.makeFrame(screen: screen, camera: camFrame(atOrBefore: t),
+                                                             atTime: t.seconds, pool: pool) {
                             adaptor.append(outPix, withPresentationTime: t)
                         }
                         progress(min(0.99, t.seconds / renderDuration))
@@ -267,22 +270,45 @@ final class WalkthroughCompositor {
     private let outSize: CGSize
     private let layout: WalkthroughLayout
     private let cameraAspect: CGFloat
+    private let redactions: [RenderRedaction]
     private let colorSpace = CGColorSpace(name: CGColorSpace.sRGB)!
 
-    init(outSize: CGSize, layout: WalkthroughLayout, cameraAspect: CGFloat) {
+    init(outSize: CGSize, layout: WalkthroughLayout, cameraAspect: CGFloat, redactions: [RenderRedaction]) {
         self.outSize = outSize
         self.layout = layout
         self.cameraAspect = cameraAspect
+        self.redactions = redactions
         self.ctx = CIContext(options: [.useSoftwareRenderer: false])
     }
 
-    func makeFrame(screen: CVPixelBuffer, camera: CVPixelBuffer?, pool: CVPixelBufferPool) -> CVPixelBuffer? {
+    func makeFrame(screen: CVPixelBuffer, camera: CVPixelBuffer?,
+                   atTime: Double, pool: CVPixelBufferPool) -> CVPixelBuffer? {
         let outRect = CGRect(origin: .zero, size: outSize)
 
         var screenCI = CIImage(cvPixelBuffer: screen)
         let sScale = screenCI.extent.width > 0 ? outSize.width / screenCI.extent.width : 1
         screenCI = screenCI.transformed(by: CGAffineTransform(scaleX: sScale, y: sScale))
         var comp = screenCI.cropped(to: outRect)
+
+        // Redactions composite OVER the screen but UNDER the camera bubble — your face is never
+        // redacted and always sits on top. Top-left normalized rect → Core Image bottom-left
+        // output-pixel rect (the single flip), then blur or solid-fill in ONE GPU pass.
+        for red in redactions where red.activeAt(atTime) {
+            let px = CGRect(x: red.rect.minX * outSize.width,
+                            y: red.rect.minY * outSize.height,
+                            width:  red.rect.width  * outSize.width,
+                            height: red.rect.height * outSize.height)
+            let flipped = CGRect(x: px.minX, y: outSize.height - px.maxY,
+                                 width: px.width, height: px.height)
+            let r = flipped.integral.intersection(outRect)   // integral avoids half-pixel seams
+            guard r.width >= 1, r.height >= 1 else { continue }
+
+            if red.blur {
+                if let patch = redactBlur(comp, rect: r) { comp = patch.composited(over: comp) }
+            } else if let solid = red.color {
+                if let fill = solidFill(rect: r, color: CIColor(cgColor: solid)) { comp = fill.composited(over: comp) }
+            }
+        }
 
         if let camera, layout.cameraVisible {
             // top-left bubble rect → Core Image bottom-left rect
@@ -322,6 +348,33 @@ final class WalkthroughCompositor {
         guard let outPix = out else { return nil }
         ctx.render(comp, to: outPix, bounds: outRect, colorSpace: colorSpace)
         return outPix
+    }
+
+    /// Unreadable redaction: pixellate (kills small glyphs) → clamp-to-extent (so the Gaussian
+    /// doesn't darken/halo at the patch edges) → Gaussian blur → MANDATORY re-crop (the clamp made
+    /// the image infinite; without the crop an infinite plane would cover the whole frame).
+    private func redactBlur(_ source: CIImage, rect: CGRect) -> CIImage? {
+        let patch = source.cropped(to: rect)
+        guard !patch.extent.isInfinite, patch.extent.width >= 1 else { return nil }
+        let minSide = min(rect.width, rect.height)
+        let cell = max(8, minSide / 14)
+        let pix = CIFilter.pixellate()
+        pix.inputImage = patch
+        pix.center = CGPoint(x: rect.midX, y: rect.midY)   // stable cells → no crawl across frames
+        pix.scale = Float(cell)
+        guard let pixelated = pix.outputImage else { return nil }
+        let clamped = pixelated.clampedToExtent()
+        let blur = CIFilter.gaussianBlur()
+        blur.inputImage = clamped
+        blur.radius = Float(max(4, cell * 0.75))
+        guard let blurred = blur.outputImage else { return pixelated.cropped(to: rect) }
+        return blurred.cropped(to: rect)                   // MANDATORY re-crop (clamp made it infinite)
+    }
+
+    /// Solid redaction: a constant-color generator cropped to `rect`. Preserves alpha so a
+    /// translucent dim composites correctly over the screen.
+    private func solidFill(rect: CGRect, color: CIColor) -> CIImage? {
+        CIImage(color: color).cropped(to: rect)   // infinite constant-color plane, confined to the rect
     }
 
     private func shapedCamera(_ camera: CVPixelBuffer, rect: CGRect, radius: CGFloat) -> CIImage? {
