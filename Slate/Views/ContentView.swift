@@ -12,7 +12,7 @@ struct ContentView: View {
             LibraryView()
                 .tabItem { Label("Library", systemImage: "rectangle.stack") }
         }
-        .frame(minWidth: 880, minHeight: 620)
+        .frame(minWidth: 820, minHeight: 480)
     }
 }
 
@@ -22,14 +22,16 @@ struct RecordPanel: View {
     @StateObject private var teleprompter = TeleprompterController()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            header
+        VStack(spacing: 0) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    header
 
-            if !coordinator.screenPerm {
-                PermissionBanner(coordinator: coordinator)
-            }
+                    if !coordinator.screenPerm {
+                        PermissionBanner(coordinator: coordinator)
+                    }
 
-            GroupBox("Sources") {
+                    GroupBox("Sources") {
                 Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
                     GridRow {
                         Text("Display").gridColumnAlignment(.trailing)
@@ -68,15 +70,20 @@ struct RecordPanel: View {
                 .padding(6)
             }
 
-            TeleprompterBox(teleprompter: teleprompter, axGranted: coordinator.axPerm)
+                    TeleprompterBox(teleprompter: teleprompter, axGranted: coordinator.axPerm)
 
-            PermissionsView(coordinator: coordinator)
+                    PermissionsView(coordinator: coordinator)
+                }
+                .padding(20)
+            }
 
-            Spacer(minLength: 0)
+            Divider()
             recordBar
+                .padding(.horizontal, 20)
+                .padding(.vertical, 12)
+                .background(.bar)
         }
-        .padding(20)
-        .frame(minWidth: 440, minHeight: 520)
+        .frame(minWidth: 440, minHeight: 380)
         .task { await coordinator.refreshDevices() }
         .onAppear { teleprompter.targetDisplayID = coordinator.selectedDisplayID }
         .onChange(of: coordinator.selectedDisplayID) { _, id in
@@ -108,7 +115,8 @@ struct RecordPanel: View {
     }
 
     private var recordBar: some View {
-        HStack(spacing: 14) {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 14) {
             Button {
                 Task {
                     if coordinator.isRecording { await coordinator.stop() }
@@ -134,12 +142,12 @@ struct RecordPanel: View {
                     NSWorkspace.shared.activateFileViewerSelecting([url])
                 }
             }
-        }
-        .overlay(alignment: .bottomLeading) {
+            }
             if !coordinator.status.isEmpty {
                 Text(coordinator.status)
                     .font(.caption).foregroundStyle(.secondary)
-                    .offset(y: 22)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
     }

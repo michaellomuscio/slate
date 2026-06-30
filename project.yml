@@ -9,10 +9,17 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"            # Swift 5 language mode (compiler is 6.3) — avoids strict-concurrency churn on v1
-    MARKETING_VERSION: "0.4.1"
-    CURRENT_PROJECT_VERSION: "9"
+    MARKETING_VERSION: "0.4.2"
+    CURRENT_PROJECT_VERSION: "10"
     PRODUCT_BUNDLE_IDENTIFIER: com.lomusciolabs.slate
-    CODE_SIGN_STYLE: Automatic
+    # Sign EVERY configuration (Debug included) with the stable Developer ID identity, not
+    # ad-hoc. macOS keys Screen Recording / Accessibility grants to the signing identity's
+    # Designated Requirement; an ad-hoc Debug build gets a NEW identity each rebuild, so macOS
+    # "forgets" the grant every time (the recurring re-prompt bug). Manual Developer ID gives
+    # one stable identity shared by every build → grant once, persists forever.
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "Developer ID Application: MICHAEL FRANCIS LOMUSCIO III (C9562TBW66)"
+    DEVELOPMENT_TEAM: C9562TBW66
     ENABLE_HARDENED_RUNTIME: YES    # required for notarization; needs NO extra entitlements for
                                     # Slate (ScreenCaptureKit + Accessibility are TCC-gated, camera/
                                     # mic ride the Info.plist usage strings, no JIT/dylib injection)
