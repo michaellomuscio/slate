@@ -9,8 +9,8 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"            # Swift 5 language mode (compiler is 6.3) — avoids strict-concurrency churn on v1
-    MARKETING_VERSION: "0.4.3"
-    CURRENT_PROJECT_VERSION: "11"
+    MARKETING_VERSION: "0.4.4"
+    CURRENT_PROJECT_VERSION: "12"
     PRODUCT_BUNDLE_IDENTIFIER: com.lomusciolabs.slate
     # Sign EVERY configuration (Debug included) with the stable Developer ID identity, not
     # ad-hoc. macOS keys Screen Recording / Accessibility grants to the signing identity's

@@ -150,16 +150,41 @@ enum WalkthroughExporter {
             let vQueue = DispatchQueue(label: "slate.export.video")
             let aQueue = DispatchQueue(label: "slate.export.audio")
 
-            // camera frame matching — only ever touched on vQueue
+            // Screen + camera frame matchers — advance each reader to the latest frame whose pts
+            // is at-or-before a requested time `t`, holding the last one. Only touched on vQueue.
+            var pendingScreen: CMSampleBuffer? = nil
+            var lastScreenRetain: CMSampleBuffer? = nil
+            var lastScreenPix: CVPixelBuffer? = nil
+            var screenDone = false
+            func screenFrame(atOrBefore t: CMTime) -> CVPixelBuffer? {
+                while true {
+                    if let p = pendingScreen {
+                        if CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(p), t) <= 0 {
+                            if let img = CMSampleBufferGetImageBuffer(p) { lastScreenPix = img; lastScreenRetain = p }
+                            pendingScreen = nil
+                        } else { break }
+                    } else if screenDone {
+                        break
+                    } else if let nx = vOut.copyNextSampleBuffer() {
+                        pendingScreen = nx
+                    } else { screenDone = true; break }
+                }
+                if lastScreenPix == nil, let p = pendingScreen {   // first frame's pts may be > 0 — show it anyway
+                    lastScreenPix = CMSampleBufferGetImageBuffer(p); lastScreenRetain = p; pendingScreen = nil
+                }
+                _ = lastScreenRetain
+                return lastScreenPix
+            }
+
             var pendingCam: CMSampleBuffer? = nil
             var lastCamRetain: CMSampleBuffer? = nil
             var lastCamPix: CVPixelBuffer? = nil
             var camDone = false
-            func camFrame(atOrBefore pts: CMTime) -> CVPixelBuffer? {
+            func camFrame(atOrBefore t: CMTime) -> CVPixelBuffer? {
                 guard let camOut else { return nil }
                 while true {
                     if let p = pendingCam {
-                        if CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(p), pts) <= 0 {
+                        if CMTimeCompare(CMSampleBufferGetPresentationTimeStamp(p), t) <= 0 {
                             if let img = CMSampleBufferGetImageBuffer(p) { lastCamPix = img; lastCamRetain = p }
                             pendingCam = nil
                         } else { break }
@@ -173,22 +198,25 @@ enum WalkthroughExporter {
                 return lastCamPix
             }
 
+            // Drive output at a CONSTANT 30 fps. Screen capture is variable-rate (it only emits a
+            // frame when the screen *changes*), so writing one output frame per screen frame froze
+            // the camera whenever the screen was static. Sampling both tracks on a fixed clock keeps
+            // the camera smooth — and audio in sync — regardless of screen activity.
+            let outFPS: Int32 = 30
+            var outIdx: Int64 = 0
             group.enter()
             vIn.requestMediaDataWhenReady(on: vQueue) {
                 while vIn.isReadyForMoreMediaData {
-                    var finished = false
+                    let t = CMTime(value: outIdx, timescale: outFPS)
+                    if t.seconds >= renderDuration { vIn.markAsFinished(); group.leave(); break }
                     autoreleasepool {
-                        guard let sb = vOut.copyNextSampleBuffer(),
-                              let screenPix = CMSampleBufferGetImageBuffer(sb) else { finished = true; return }
-                        let pts = CMSampleBufferGetPresentationTimeStamp(sb)
-                        let cam = camFrame(atOrBefore: pts)
-                        if let pool = adaptor.pixelBufferPool,
-                           let outPix = compositor.makeFrame(screen: screenPix, camera: cam, pool: pool) {
-                            adaptor.append(outPix, withPresentationTime: pts)
+                        if let screen = screenFrame(atOrBefore: t), let pool = adaptor.pixelBufferPool,
+                           let outPix = compositor.makeFrame(screen: screen, camera: camFrame(atOrBefore: t), pool: pool) {
+                            adaptor.append(outPix, withPresentationTime: t)
                         }
-                        progress(min(0.99, pts.seconds / renderDuration))
+                        progress(min(0.99, t.seconds / renderDuration))
                     }
-                    if finished { vIn.markAsFinished(); group.leave(); break }
+                    outIdx += 1
                 }
             }
 
