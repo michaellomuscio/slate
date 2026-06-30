@@ -146,43 +146,62 @@ final class EditDecision: ObservableObject {
 }
 
 /// Renders the edited take to `final.mp4` **natively, in-app** — no Python, no external
-/// ffmpeg, no repo dependency, so it just works wherever Slate is installed. It rebuilds the
-/// exact aligned screen+audio composition the editor played (`CompositionBuilder.master`,
-/// which has no `AVMutableVideoComposition`, so it dodges the macOS 26 black-render bug),
-/// keeps only the surviving spans, and exports with `AVAssetExportSession`. Sync is preserved
-/// by construction: each kept span copies video and audio together. This is a clean cut of
-/// the screencast (screen + audio); zoom-on-click, burned captions, camera PIP and loudness
-/// normalization remain the job of the full `/slate` pipeline.
+/// ffmpeg, no repo dependency. It bakes the kept spans into trimmed compositions for the
+/// screen+audio AND the camera (cut with the SAME spans so they stay in sync), then hands them
+/// to `WalkthroughExporter.render`, which composites the camera "head" per-frame in Core Image
+/// (NOT `AVMutableVideoComposition` → no macOS 26 black-render). So the final cut keeps your
+/// face, at a sensible size (long edge capped at 1920). Burned captions / click-zoom / social
+/// reframe remain the job of the full `/slate` pipeline.
 enum NativeRenderer {
-    static func render(bundle: TakeBundle, kept: [(Double, Double)]) async throws -> URL {
+    static func render(bundle: TakeBundle, kept: [(Double, Double)],
+                       progress: @escaping @Sendable (Double) -> Void = { _ in }) async throws -> URL {
         let r = try await CompositionBuilder.build(bundle)
-        guard r.hasScreenVideo || r.hasAudio else {
-            throw err("This take has no screen or audio to render.")
-        }
-
-        let out = AVMutableComposition()
+        guard r.hasScreenVideo else { throw err("This take has no screen video to render.") }
         let durSec = r.duration.seconds.isFinite ? r.duration.seconds : 0
+
+        // Bake the cuts into a trimmed screen+audio composition.
+        let cutSA = AVMutableComposition()
         var cursor = CMTime.zero
         for (s, e) in kept {
-            let startSec = max(0, s), endSec = min(e, durSec)
-            guard endSec - startSec > 0.001 else { continue }
-            let range = CMTimeRange(start: CMTime(seconds: startSec, preferredTimescale: 600),
-                                    end: CMTime(seconds: endSec, preferredTimescale: 600))
-            try await out.insertTimeRange(range, of: r.master, at: cursor)
+            let range = clamp(s, e, durSec)
+            guard range.duration.seconds > 0.001 else { continue }
+            try await cutSA.insertTimeRange(range, of: r.master, at: cursor)
             cursor = CMTimeAdd(cursor, range.duration)
         }
-        guard cursor.seconds > 0.05 else {     // cursor == total inserted length (avoids async AVAsset.duration)
+        guard cursor.seconds > 0.05 else {
             throw err("The edit removes everything — there's nothing left to render.")
         }
 
-        let outURL = bundle.finalRenderURL
-        try? FileManager.default.removeItem(at: outURL)
-        guard let session = AVAssetExportSession(asset: out, presetName: AVAssetExportPresetHighestQuality) else {
-            throw err("Couldn't create the video exporter for this take.")
+        // Cut the camera with the SAME spans so the face stays synced. It may end early (camera
+        // warm-up / early stop) — skip those gaps; the compositor simply shows no bubble there.
+        var cutCam: AVMutableComposition? = nil
+        if r.hasCamera, let cam = r.camera {
+            let cc = AVMutableComposition()
+            var ccur = CMTime.zero
+            for (s, e) in kept {
+                let range = clamp(s, e, durSec)
+                guard range.duration.seconds > 0.001 else { continue }
+                try? await cc.insertTimeRange(range, of: cam, at: ccur)
+                ccur = CMTimeAdd(ccur, range.duration)
+            }
+            cutCam = cc
         }
-        session.shouldOptimizeForNetworkUse = true
-        try await session.export(to: outURL, as: .mp4)
+
+        var layout = WalkthroughLayout.load(from: bundle) ?? .default
+        layout.cameraVisible = (cutCam != nil)       // always include the face when the take has one
+
+        let outURL = bundle.finalRenderURL
+        try await WalkthroughExporter.render(
+            screenAudio: cutSA, camera: cutCam,
+            screenSize: r.screenSize, cameraSize: r.cameraSize,
+            hasAudio: r.hasAudio, duration: cursor.seconds,
+            layout: layout, to: outURL, progress: progress)
         return outURL
+    }
+
+    private static func clamp(_ s: Double, _ e: Double, _ dur: Double) -> CMTimeRange {
+        CMTimeRange(start: CMTime(seconds: max(0, s), preferredTimescale: 600),
+                    end: CMTime(seconds: min(e, dur), preferredTimescale: 600))
     }
 
     private static func err(_ message: String) -> NSError {

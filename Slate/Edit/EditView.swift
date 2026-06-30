@@ -62,6 +62,7 @@ struct EditPane: View {
     @State private var previewSkip = true                  // playback skips cut/trim spans
 
     @State private var rendering = false
+    @State private var renderProgress: Double = 0
     @State private var statusMsg: String? = nil
     @State private var statusIsError = false
 
@@ -204,13 +205,16 @@ struct EditPane: View {
             Button { save() } label: { Label("Save edit", systemImage: "square.and.arrow.down") }
                 .disabled(!rp.ready || rendering)
 
+            if rendering {
+                ProgressView(value: renderProgress).frame(width: 90)
+            }
             Button { renderNow() } label: {
                 if rendering { ProgressView().controlSize(.small).frame(width: 16, height: 16) }
                 else { Label("Render", systemImage: "film") }
             }
             .buttonStyle(.borderedProminent)
             .disabled(!rp.ready || rendering)
-            .help("Render the trimmed take to final.mp4 (screen + audio) — runs entirely in Slate, no setup.")
+            .help("Render the trimmed take to final.mp4 (screen + your camera) — runs entirely in Slate, no setup.")
         }
         .overlay(alignment: .bottomLeading) {
             if let m = statusMsg {
@@ -251,13 +255,14 @@ struct EditPane: View {
         } catch {
             statusIsError = true; statusMsg = "Save failed: \(error.localizedDescription)"; return
         }
-        rendering = true; statusIsError = false; statusMsg = "Rendering final.mp4…"
+        rendering = true; renderProgress = 0; statusIsError = false; statusMsg = "Rendering final.mp4…"
         let b = bundle
         let kept = decision.keptIntervals()
         let length = tc(decision.keptDuration)
         Task {
             do {
-                let url = try await NativeRenderer.render(bundle: b, kept: kept)
+                let url = try await NativeRenderer.render(bundle: b, kept: kept,
+                                                          progress: { p in Task { @MainActor in renderProgress = p } })
                 await MainActor.run {
                     rendering = false; statusIsError = false
                     statusMsg = "Rendered final.mp4 (\(length))."

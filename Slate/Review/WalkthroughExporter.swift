@@ -40,15 +40,30 @@ enum WalkthroughExporter {
                        layout: WalkthroughLayout,
                        progress: @escaping @Sendable (Double) -> Void) async throws {
         let r = try await CompositionBuilder.build(bundle)
-        guard r.hasScreenVideo,
-              let screenTrack = try await r.master.loadTracks(withMediaType: .video).first
+        guard r.hasScreenVideo else { throw ExportError.noScreen }
+        try await render(screenAudio: r.master, camera: r.camera,
+                         screenSize: r.screenSize, cameraSize: r.cameraSize,
+                         hasAudio: r.hasAudio, duration: r.duration.seconds,
+                         layout: layout, to: bundle.walkthroughURL, progress: progress)
+    }
+
+    /// The reusable core: read `screenAudio` (screen video + optional audio) and an optional
+    /// `camera` asset, composite the camera "head" per-frame in Core Image (NOT
+    /// AVMutableVideoComposition — that renders black on macOS 26), and write `outURL`. Both the
+    /// Compose walkthrough and the Edit-tab final render call this; the Edit tab passes
+    /// already-cut compositions so trims/cuts are baked in.
+    static func render(screenAudio: AVAsset, camera: AVAsset?,
+                       screenSize: CGSize, cameraSize: CGSize, hasAudio: Bool, duration: Double,
+                       layout: WalkthroughLayout, to outURL: URL,
+                       progress: @escaping @Sendable (Double) -> Void) async throws {
+        guard let screenTrack = try await screenAudio.loadTracks(withMediaType: .video).first
         else { throw ExportError.noScreen }
 
-        let outSize = outputSize(screen: r.screenSize)
+        let outSize = outputSize(screen: screenSize)
         let pixelAttrs: [String: Any] = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
 
         // ---- readers --------------------------------------------------------
-        let reader = try AVAssetReader(asset: r.master)
+        let reader = try AVAssetReader(asset: screenAudio)
         let vOut = AVAssetReaderTrackOutput(track: screenTrack, outputSettings: pixelAttrs)
         vOut.alwaysCopiesSampleData = false
         guard reader.canAdd(vOut) else { throw ExportError.config }
@@ -56,7 +71,7 @@ enum WalkthroughExporter {
 
         var aOut: AVAssetReaderTrackOutput? = nil
         var aacSettings: [String: Any]? = nil
-        if r.hasAudio, let aTrack = try await r.master.loadTracks(withMediaType: .audio).first {
+        if hasAudio, let aTrack = try await screenAudio.loadTracks(withMediaType: .audio).first {
             let pcm: [String: Any] = [
                 AVFormatIDKey: kAudioFormatLinearPCM,
                 AVLinearPCMBitDepthKey: 16,
@@ -78,7 +93,7 @@ enum WalkthroughExporter {
 
         var camReader: AVAssetReader? = nil
         var camOut: AVAssetReaderTrackOutput? = nil
-        if layout.cameraVisible, r.hasCamera, let cam = r.camera,
+        if layout.cameraVisible, let cam = camera,
            let camTrack = try await cam.loadTracks(withMediaType: .video).first {
             let cr = try AVAssetReader(asset: cam)
             let co = AVAssetReaderTrackOutput(track: camTrack, outputSettings: pixelAttrs)
@@ -87,7 +102,6 @@ enum WalkthroughExporter {
         }
 
         // ---- writer ---------------------------------------------------------
-        let outURL = bundle.walkthroughURL
         try? FileManager.default.removeItem(at: outURL)
         let writer = try AVAssetWriter(url: outURL, fileType: .mp4)
 
@@ -126,9 +140,9 @@ enum WalkthroughExporter {
         guard writer.startWriting() else { throw writer.error ?? ExportError.write }
         writer.startSession(atSourceTime: .zero)
 
-        let cameraAspect: CGFloat = r.cameraSize.height > 0 ? r.cameraSize.width / r.cameraSize.height : 16.0 / 9.0
+        let cameraAspect: CGFloat = cameraSize.height > 0 ? cameraSize.width / cameraSize.height : 16.0 / 9.0
         let compositor = WalkthroughCompositor(outSize: outSize, layout: layout, cameraAspect: cameraAspect)
-        let duration = max(0.1, r.duration.seconds)
+        let renderDuration = max(0.1, duration)
 
         // ---- pump video + audio, finish on completion -----------------------
         try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
@@ -172,7 +186,7 @@ enum WalkthroughExporter {
                            let outPix = compositor.makeFrame(screen: screenPix, camera: cam, pool: pool) {
                             adaptor.append(outPix, withPresentationTime: pts)
                         }
-                        progress(min(0.99, pts.seconds / duration))
+                        progress(min(0.99, pts.seconds / renderDuration))
                     }
                     if finished { vIn.markAsFinished(); group.leave(); break }
                 }
