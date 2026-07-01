@@ -30,3 +30,9 @@ pipeline/bin/ffmpeg
 # Recording output (never commit takes)
 *.slatebundle/
 takes/
+
+# Secrets — never commit (repo is public)
+.env
+.env.*
+*.p8
+*.pem
