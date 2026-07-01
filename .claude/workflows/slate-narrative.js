@@ -24,8 +24,18 @@ Target length: about ${target} seconds${format === 'social' ? ' (tight — 30-60
 
 READ THESE FILES in the bundle first (they are the ground truth):
   ${bundle}/take.md            — digest: audio health, app/chapter timeline, clicks, transcript, edit candidates
-  ${bundle}/transcript.json    — word + segment level transcript on the GLOBAL timeline (seconds). Fields: segments[].{text,start,end}, words[], silences[], duration. "duration" is the editable end of the take.
+  ${bundle}/transcript.json    — word + segment level transcript on the GLOBAL timeline (seconds). Fields: segments[].{text,start,end}, words[], silences[], duration.
 You MAY open a few ${bundle}/frames/*.jpg to SEE what is on screen at a given time.
+
+THE EDITABLE END OF THE TAKE (read this carefully — it is the #1 way this edit goes wrong):
+  The take's narration is the story, and it can run LONG PAST the "duration" field. The
+  "duration" field is frequently STALE (it can be frozen at the moment the SCREEN track died,
+  e.g. when the display slept while the AI worked) and does NOT mark the end of the take.
+  The TRUE editable end is the end of the NARRATION SPINE: take it as the MAX of the last
+  segment's "end" and the last word's "end" in transcript.json. ALWAYS compute this yourself
+  from the actual transcript content — do NOT trust "duration". The payoff almost always lives
+  in that tail (after the longest silence), past where "duration" stops. Keep windows may and
+  often SHOULD extend past "duration", all the way to that true narration end.
 
 CRITICAL EDITING PRINCIPLES (the user taught these):
 1. A long SILENCE in the middle is usually the AI working — it is NOT the end. CUT the silence, but KEEP the good content that comes AFTER it (the payoff often lives there). Never assume "everything after the big gap is junk."
@@ -33,7 +43,7 @@ CRITICAL EDITING PRINCIPLES (the user taught these):
 3. Keep it engaging and TIGHT. Cut boring/rambling/repeated/over-explained parts and false starts. But keep the connective tissue that makes the story cohere — don't cut so aggressively that it stops making sense.
 4. Some segments may have NO screen (screen track ended) but DO have the creator's narration + camera — those can still be the payoff. Keeping them is fine; the renderer freezes the last screen frame.
 
-A "keep window" is a [start, end] span in GLOBAL seconds (use segment boundaries from transcript.json). Times must lie within [0, duration].
+A "keep window" is a [start, end] span in GLOBAL seconds (use segment boundaries from transcript.json). Times must lie within [0, TRUE_NARRATION_END] — where TRUE_NARRATION_END = max(last segment end, last word end), NOT the stale "duration" field. Windows may extend past "duration" to reach the payoff.
 `
 
 const LENS_SCHEMA = {
@@ -108,7 +118,7 @@ const synthesis = await agent(
   `Rules for your decision:\n` +
   `- Open on the strongest HOOK (social expert's instinct), ensure a clear ARC (story expert), and land a concrete PAYOFF/takeaway (marketing + story).\n` +
   `- The payoff MUST be present if it exists in the take — re-read transcript.json near the END of the take (after any long silence) to find where the creator shows/describes the result, and KEEP it. Do not end on the setup/tease if a real payoff was recorded.\n` +
-  `- Order keepWindows in TIME order (they will be concatenated). They must be non-overlapping, on segment boundaries, within [0, duration], and total roughly ${target}s.\n` +
+  `- Order keepWindows in TIME order (they will be concatenated). They must be non-overlapping, on segment boundaries, within [0, TRUE_NARRATION_END] (= max last-segment-end / last-word-end, NOT the stale "duration"), and total roughly ${target}s. The payoff window will usually extend PAST "duration".\n` +
   `- Cut dead air, the AI-thinking silence, rambles, repeats, over-explanation, and false starts.\n\n` +
   `THE THREE EXPERT CUTS:\n${JSON.stringify(valid, null, 2)}\n\n` +
   `Return the final structured timeline.`,

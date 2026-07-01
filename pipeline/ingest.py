@@ -179,13 +179,21 @@ def _percentile(values, q):
 
 
 def find_disfluencies(words, env, hop, duration,
-                      gap_min=0.18, voiced_frac=0.40, min_margin=8.0):
+                      gap_min=0.18, gap_max=1.0, voiced_frac=0.60, min_margin=8.0,
+                      min_voiced_run=0.12):
     """Find *voiced* gaps with no transcript — likely fillers a backend deleted.
 
     `words` are on the audio-local timeline (seconds). `env` is the dBFS envelope. A gap
-    qualifies if it's at least `gap_min` long and at least `voiced_frac` of its frames sit
-    `min_margin` dB above the noise floor (real sound, not a pause). With a verbatim backend
-    (ElevenLabs) this list is usually near-empty — the fillers are already in words[]."""
+    qualifies as a probable dropped filler ("um"/"uh"/a stutter) if it is:
+      - between `gap_min` and `gap_max` long — a real dropped filler is short (<~1s); a
+        multi-second "voiced" gap is almost always room tone the normalize gain lifted over
+        the floor, or a long silence, NOT a swallowed word,
+      - at least `voiced_frac` of its frames sit `min_margin` dB above the noise floor, AND
+      - it contains a contiguous voiced run of at least `min_voiced_run` seconds (a real
+        utterance is continuous, not scattered noise blips).
+    With a verbatim backend (ElevenLabs) this list is usually near-empty — the fillers are
+    already in words[]. The trailing tail gap (last word -> end of audio) is only emitted if
+    it is itself short; a long tail is dead air, handled by the silence detector."""
     if not env:
         return []
     floor = _percentile(env, 10)
@@ -195,10 +203,19 @@ def find_disfluencies(words, env, hop, duration,
         i0 = max(0, int(a / hop))
         i1 = min(len(env), int(math.ceil(b / hop)))
         if i1 <= i0:
-            return 0.0, -90.0
+            return 0.0, -90.0, 0.0
         seg = env[i0:i1]
         voiced = sum(1 for d in seg if d > voiced_db)
-        return voiced / len(seg), max(seg)
+        # longest contiguous voiced run, in seconds
+        best = run = 0
+        for d in seg:
+            if d > voiced_db:
+                run += 1
+                if run > best:
+                    best = run
+            else:
+                run = 0
+        return voiced / len(seg), max(seg), best * hop
 
     gaps = []
     prev_end = 0.0
@@ -207,17 +224,21 @@ def find_disfluencies(words, env, hop, duration,
         gaps.append((prev_end, w["start"], prev_w, w["w"]))
         prev_end = max(prev_end, w["end"])
         prev_w = w["w"]
-    gaps.append((prev_end, duration, prev_w, None))
+    # Trailing tail (last word -> end of audio): only a candidate if it's short. A long tail
+    # is dead air / room tone, never a dropped filler — emitting it produces a bogus 55s "gap".
+    if duration - prev_end <= gap_max:
+        gaps.append((prev_end, duration, prev_w, None))
 
     out = []
     for a, b, lw, rw in gaps:
-        if b - a < gap_min:
+        dur = b - a
+        if dur < gap_min or dur > gap_max:
             continue
-        frac, peak = measure(a, b)
-        if frac >= voiced_frac:
+        frac, peak, voiced_run = measure(a, b)
+        if frac >= voiced_frac and voiced_run >= min_voiced_run:
             between = [x for x in (lw, rw) if x]
             out.append({"start": round(a, 3), "end": round(b, 3),
-                        "dur": round(b - a, 3), "peakDb": round(peak, 1),
+                        "dur": round(dur, 3), "peakDb": round(peak, 1),
                         "voicedFrac": round(frac, 2), "between": between})
     return out
 
@@ -241,8 +262,15 @@ def detect_silences(wav_path, noise_db=-28, min_dur=0.22):
     return pairs
 
 
-def extract_frames(b, out_dir, duration, periodic=5.0, max_frames=60):
+def extract_frames(b, out_dir, duration, periodic=5.0, max_frames=None):
     """Pull screenshots at clicks + scene changes + a periodic fallback, for visual context.
+
+    Frames are BUDGETED so they span the WHOLE take, not just its opening. The budget scales
+    with duration (`max_frames = max(60, duration/3)`), and when the budget is tight, click +
+    scene-change frames (the meaningful anchors) are kept in preference to the periodic grid —
+    otherwise a naive time-sort lets the first ~60 periodic frames of a long take win and the
+    finale is never seen. Each frame is tagged with a `reason` (click|scene|periodic) so the
+    digest can label it.
 
     NOTE: ScreenCaptureKit screen.mov is variable-frame-rate (delivers only on screen
     change), so an input-seek can land on a frame up to ~1s stale inside a static gap — fine
@@ -252,32 +280,56 @@ def extract_frames(b, out_dir, duration, periodic=5.0, max_frames=60):
         return []
     out_dir.mkdir(exist_ok=True)
     screen_end = b.stream_end("screen") or duration
-    times = set()
+    if max_frames is None:
+        max_frames = max(60, int(duration / 3))
+
+    # Candidate times tagged by reason, priority: click > scene > periodic. Later duplicate
+    # times for the same instant lose to the higher-priority reason already recorded.
+    reason = {}
+    def add(gt, why):
+        gt = round(gt, 2)
+        prio = {"click": 0, "scene": 1, "periodic": 2}
+        if gt not in reason or prio[why] < prio[reason[gt]]:
+            reason[gt] = why
+
     for e in b.clicks():
-        times.add(round(float(e["t"]), 2))
+        add(float(e["t"]), "click")
     r = subprocess.run(
         [ffmpeg_cmd(), "-hide_banner", "-i", str(screen),
          "-vf", "select='gt(scene,0.4)',showinfo", "-vsync", "vfr", "-f", "null", "-"],
         capture_output=True, text=True)
     for m in re.findall(r"pts_time:([\d.]+)", r.stderr):
-        times.add(round(b.to_global("screen", float(m)), 2))
+        add(b.to_global("screen", float(m)), "scene")
     t = 0.0
     while t < duration:
-        times.add(round(t, 2))
+        add(t, "periodic")
         t += periodic
 
+    # Drop times past the screen's own end (can't seek there), then select within budget so
+    # coverage spans the whole take: keep ALL click+scene anchors, then fill with periodic
+    # frames spread evenly across the timeline (stride the sorted periodic list).
+    cand = [(gt, why) for gt, why in reason.items() if gt <= screen_end]
+    anchors = sorted([c for c in cand if c[1] != "periodic"])
+    periodics = sorted([c for c in cand if c[1] == "periodic"])
+    room = max(0, max_frames - len(anchors))
+    if room < len(periodics) and periodics:
+        n = len(periodics)
+        if room <= 1:
+            periodics = [periodics[-1]]              # keep the finale over the opening
+        else:
+            # even sample INCLUDING both endpoints so coverage reaches the take's end
+            idx = sorted({int(round(i * (n - 1) / (room - 1))) for i in range(room)})
+            periodics = [periodics[i] for i in idx]
+    chosen = sorted(set(anchors) | set(periodics))
+
     frames = []
-    for gt in sorted(times):
-        if len(frames) >= max_frames:
-            break
-        if gt > screen_end:                        # don't seek past the screen's own end
-            continue
+    for gt, why in chosen:
         local = b.to_local("screen", gt)
         name = "f_%06d.jpg" % int(gt * 1000)
         try:
             run([ffmpeg_cmd(), "-y", "-ss", "%.3f" % local, "-i", str(screen),
                  "-frames:v", "1", "-vf", "scale=960:-1", str(out_dir / name)])
-            frames.append({"t": gt, "file": "frames/" + name})
+            frames.append({"t": gt, "file": "frames/" + name, "reason": why})
         except RuntimeError:
             pass
     return frames
@@ -352,8 +404,8 @@ def main():
 
     transcript = {
         "audioStartOffset": off,
-        "duration": round(b.timeline_end(), 3),     # one authoritative end (earliest stream end)
-        "stt": result.get("backend", "?"),          # provenance: which engine ran
+        "duration": round(b.timeline_end(), 3),     # authoritative end = end of narration spine (audio)
+        "stt": result.get("backend", "?"),          # provenance engine; digest.py reads key "stt"
         "language": lang,
         "text": (result.get("text") or "").strip(),
         "words": words,

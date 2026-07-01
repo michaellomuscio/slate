@@ -44,6 +44,10 @@ SPECIAL_TOKEN = re.compile(r"^\[_.*\]$")            # whisper [_BEG_], [_TT_300]
 SCRIBE_URL = "https://api.elevenlabs.io/v1/speech-to-text"
 SCRIBE_MODEL = "scribe_v1"
 
+# Scribe sometimes reports an audio_event (e.g. a tongue-click) as spanning the whole
+# following silence. Clamp any audio_event to this many seconds so take.md isn't misled.
+AUDIO_EVENT_MAX = 1.0
+
 # whisper.cpp -dtw alignment presets; the preset must match the model or token timestamps
 # degrade (and our disfluency detector leans on accurate word boundaries).
 DTW_PRESETS = {"tiny", "tiny.en", "base", "base.en", "small", "small.en",
@@ -179,6 +183,10 @@ def normalize_scribe(raw):
             words.append({"w": text, "start": round(start, 3), "end": round(end, 3),
                           "p": round(_prob_from_logprob(tok.get("logprob")), 3)})
         elif typ == "audio_event":
+            # Scribe often stretches a brief noise (a tongue-click) across a long silent gap,
+            # reporting spans of 10-20s+. Those are meaningless and misleading in take.md, so
+            # clamp the reported duration to ~1s anchored at the event's start.
+            end = min(end, start + AUDIO_EVENT_MAX)
             audio_events.append({"text": text, "start": round(start, 3), "end": round(end, 3)})
         # "spacing" tokens carry no content — skip.
 

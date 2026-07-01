@@ -134,7 +134,7 @@ def main():
     w("- **Streams:** %s" % " · ".join(sline))
     if tr:
         w("- **Transcript:** %s backend · %d words · %d segments"
-          % (tr.get("backend", "?"), len(real_words), len(segments)))
+          % (tr.get("stt", "?"), len(real_words), len(segments)))
     w("")
 
     # ---- audio health (catches the silent/too-quiet mic problem) ----

@@ -98,3 +98,13 @@ intent), remapped through the cuts only at render time.
 
 The in-app native renderer paints these per-frame in Core Image (over the screen, under the
 camera bubble). `render.py` may honor the same fractional contract later.
+
+## Validation (`pipeline/validate_edit.py`)
+
+`python3 pipeline/validate_edit.py <bundle>` checks an `edit.json` against its bundle, and
+`render.py` runs it first and **refuses to render an invalid EDL**. It asserts: the timeline is
+sorted, non-overlapping, gapless, and covers `[timeline_start, timeline_end]` (the guard against
+silently truncating the payoff); every `cut`/`silence` has a `reason`; zoom/redaction times are in
+range; and **no cut boundary lands mid-word** (cross-checked against `transcript.words[]`). It also
+warns if a `course` edit removes too much. A `cut` with `reason: "long-wait"` marks a multi-minute
+dead-air gap (screen asleep / AI thinking) collapsed to a ~1.5 s beat, keeping everything after it.
