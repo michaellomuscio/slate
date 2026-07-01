@@ -4,10 +4,12 @@ argument-hint: [path to take bundle] [--preset social|course] [--preview]
 ---
 
 Render the approved edit. Parse **$ARGUMENTS** for the bundle path (default: current
-directory) and any flags (`--preset social|course`, `--preview` for a fast half-res check,
-`--no-zoom`, `--no-camera`).
+directory) and any flags (`--preset social|course`, `--preview` for a fast low-fps caption-free
+check, `--no-zoom`, `--no-camera`).
 
 1. Confirm `edit.json` exists (if not, tell me to run `/slate-strip-filler` or `/slate-cut`).
+   `render.py` validates it first and **refuses to render an invalid EDL** — if it errors, run
+   `python3 pipeline/validate_edit.py "<bundle>"` to see every problem, fix them, and retry.
 2. Run: `python3 ~/projects/screen-recorder/pipeline/render.py "<bundle>" <flags>`
 3. Report: final length vs source length, resolution/preset, and whether captions were
    burned in or written as a sidecar.

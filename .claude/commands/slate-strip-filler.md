@@ -14,7 +14,9 @@ Clean up a Slate take by removing dead air and fillers. Bundle: **$ARGUMENTS**
    - Catch what silence-detection can't: false starts, repeated sentences, a tangent that
      should go. Add those as `cut` segments with a `reason`.
    - Make sure the timeline still covers `[0, duration]` with no gaps (see `EDIT_SCHEMA.md`).
-3. If you change anything, rewrite `edit.json` (keep it valid per `EDIT_SCHEMA.md`).
+3. If you change anything, rewrite `edit.json` (valid per `EDIT_SCHEMA.md`), then run
+   `python3 ~/projects/screen-recorder/pipeline/validate_edit.py "<bundle>"` and fix anything
+   it flags (gaps, out-of-range zooms, mid-word cuts).
 4. Show me a short before/after: original length, time removed, new length, and the list of
    cuts with reasons. Wait for my OK, then point me to `/slate-render`.
 

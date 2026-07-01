@@ -24,8 +24,10 @@ only where noted:
    - If audio health is flagged TOO QUIET **and** there's no transcript, stop and tell me —
      the mic likely wasn't picking up; re-record or proceed visuals-only.
 3. **Choose the scenes — a real narrative process, not just "keep a strong 30–60s."** Run a
-   first pass with `python3 pipeline/propose_edit.py "<bundle>"` (cleans dead air/fillers),
-   then do the editorial judgment via the multi-lens panel (social-media + storytelling +
+   first pass with `python3 pipeline/propose_edit.py "<bundle>" --preset <target>` (keep-first
+   cleanup — **course** trims only genuine dead air, **social** cuts tight; it recovers the
+   payoff automatically by using the true timeline end, collapses long AI-wait gaps to a ~1.5s
+   beat, and never cuts mid-word), then do the editorial judgment via the multi-lens panel (social-media + storytelling +
    marketing experts → a showrunner). Reason through those lenses, or run the
    `slate-narrative` workflow. **Non-negotiable rules (learned the hard way):**
    - **A long mid-take silence is the AI working — NOT the end.** Cut the silence, KEEP the
@@ -41,9 +43,12 @@ only where noted:
    beat-by-beat, the chosen spans with their role (hook/context/demo/payoff), original vs new
    length, and explicit confirmation the **payoff is included**. **Wait for my OK.** (If I said
    "just do it" in the notes, skip the wait.)
-5. **Render** — `python3 pipeline/render.py "<bundle>" --preset <target>` (suggest `--preview`
-   first for a fast look). Report final vs source length, resolution, and that captions burned
-   in (`final.srt` is also written). Then offer: `open "<bundle>/final.mp4"`.
+5. **Validate, then render** — first `python3 pipeline/validate_edit.py "<bundle>"` and fix
+   anything it flags (a timeline gap, an out-of-range zoom, a cut landing mid-word); the
+   renderer runs this too and **refuses to render an invalid EDL**. Then `python3
+   pipeline/render.py "<bundle>" --preset <target>` (suggest `--preview` first — a fast,
+   low-fps, caption-free structure check). Report final vs source length, resolution, and that
+   captions burned in. Then offer: `open "<bundle>/final.mp4"`.
 
 Principles: you reason over the transcript + `take.md` + frames + clicks and write `edit.json`;
 ffmpeg does the pixels; sync is guaranteed by construction (cuts remove audio+video together).

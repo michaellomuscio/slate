@@ -8,7 +8,9 @@ Shape a Slate take into a finished piece. Parse **$ARGUMENTS** for the target
 bundle path (default: current directory).
 
 1. Make sure the take is ingested (run `/slate-ingest` first if there's no `transcript.json`).
-   Read `take.md` and `transcript.json`; peek at `frames/` to see what's on screen.
+   Read `take.md` and `transcript.json`; peek at `frames/` to see what's on screen. For a clean
+   starting EDL, run `python3 pipeline/propose_edit.py "<bundle>" --preset <target>` first
+   (keep-first; course conservative, social tight), then reshape it below.
 
 2. **Choose the scenes with a real narrative process — this is the whole game.** Don't just
    keep "a strong 30–60s." Run the multi-lens analysis (you may invoke the
@@ -34,8 +36,10 @@ bundle path (default: current directory).
    - **Tight, not incoherent.** Cut boring/rambling/repeated/over-explained parts and false
      starts; keep the beats that carry the story.
 
-4. Write a valid `edit.json` (see `EDIT_SCHEMA.md`) — `timeline` covers `[0, duration]`,
-   keeps in time order, every `cut` has a `reason`. Place `zooms` on key reveals/clicks.
+4. Write a valid `edit.json` (see `EDIT_SCHEMA.md`) — `timeline` covers the full editable span
+   gaplessly, keeps in time order, every `cut` has a `reason`, and no cut lands mid-word. Place
+   `zooms` on key reveals/clicks. Then **validate it**: `python3 pipeline/validate_edit.py
+   "<bundle>"` and fix anything it flags before you show me the plan.
 
 5. Show me: the working title, the throughline (one sentence), the narrative arc beat-by-beat,
    chosen spans with their role (hook/context/demo/payoff), and total length. Confirm the
