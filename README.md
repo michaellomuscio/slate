@@ -1,6 +1,10 @@
 # Slate
 
-**A macOS screen recorder built so [Claude Code](https://claude.com/claude-code) can edit the result.**
+**A macOS screen recorder with a built-in editor: record your screen, camera, and mic, then trim, cut, redact, and export a finished video — without leaving the app. And when you'd rather have AI do the editing, it hands off to [Claude Code](https://claude.com/claude-code).**
+
+### ⬇️&nbsp; [**Download Slate for macOS**](https://github.com/michaellomuscio/slate/releases/latest/download/Slate.dmg) &nbsp;·&nbsp; [all releases](https://github.com/michaellomuscio/slate/releases)
+
+*macOS 15+ · notarized (opens cleanly, no warnings) · free & open source (MIT)*
 
 Loom, Screen Studio, and Descript bake everything into one finished video. Slate does the
 opposite: it records each stream **separately** — screen, camera, mic, and a timestamped
@@ -15,17 +19,88 @@ the transcript, sees the frames, and cuts the video.
 
 ---
 
+## 🎥 A full recorder + editor — no terminal required
+
+You don't need Claude Code, a terminal, or any setup to get a finished video out of Slate. It's
+a first-class **general-purpose screen recorder**: capture your screen, camera, and mic together,
+then **trim, cut, redact, and render** — all inside the app. The whole flow is
+**Record → Compose → Edit → Render → Library**, with a tab for each step.
+
+**[⬇️ Download the latest `Slate.dmg`](https://github.com/michaellomuscio/slate/releases/latest/download/Slate.dmg)**,
+open it, and drag **Slate** into Applications. On first launch, grant **Screen Recording**,
+**Camera**, and **Microphone** (and optionally **Accessibility**, for click-driven auto-zoom and
+teleprompter hotkeys). Slate is notarized, so it opens without a Gatekeeper warning and you grant
+these permissions only **once**.
+
+### Record your screen
+1. Open the **Record** tab.
+2. Choose your **Display**, **Camera** (or *None*), **Microphone** (or *None*), and **frame rate**
+   (30 or 60 fps).
+3. Click **Record** (or press **⌘R**) and do your thing. Every click is timestamped in case you
+   want a zoom there later.
+4. Click **Stop**. The take is saved under `~/Movies/Slate/` and appears in the **Edit** and
+   **Library** tabs.
+
+That alone gives you a clean screen + webcam + mic recording. Everything below is optional polish.
+
+### 📜 Teleprompter — read a script your viewers never see
+In the **Record** tab, paste your script into the **Teleprompter** box and flip **Show on screen**.
+It crawls across the top of the recorded display while you talk.
+- Adjust **speed** and **font size**; **Loop** repeats it.
+- Pressing **Record** starts the crawl automatically; **Stop** pauses it.
+- With Accessibility granted, drive it hands-free: **⌃⌥Space** play/pause, **⌃⌥←/→** slower/faster,
+  **⌃⌥R** restart.
+- It's Slate's own floating window, so it's composited *out* of the recording — you read it, your
+  audience never sees it.
+
+### 🧑‍💻 Compose — put your face over the screen
+In the **Compose** tab, pick a take and place your camera "head" bubble:
+- **Drag** to move it, **drag the corner** to resize.
+- Choose a **shape** (circle / rounded / rectangle), and toggle **border**, **shadow**, and **mirror**.
+- The layout is saved with the take and used automatically when you render in the Edit tab. You can
+  also **Export walkthrough** here for a quick standalone clip.
+
+### ✂️ Edit — trim, cut, redact, and render
+The **Edit** tab is a full visual editor:
+- **Pick a take** (defaults to the newest) and **scrub** the video.
+- **Trim** the ends with **Set In** / **Set Out**.
+- **Cut dead air**: click **Start cut**, then **End cut here** — the span is removed with audio and
+  video locked together (they can't drift). **Delete cut** removes one. Turn on **Preview cuts** to
+  watch the edited result live, with the removed parts skipped.
+- **Redact / blur**: click **+ Redact** to drop a box on the screen. Drag to move, drag the corner
+  to resize. Each box gets its **own timeline row** beneath the main timeline — set when it's active
+  with **Set Start / Set End** or by dragging the row's ends. Switch each box between **Solid** (a
+  color you pick) and **Blur** (unreadable — great for hiding tokens, emails, or names). Add as many
+  boxes as you need.
+- **Render** produces `final.mp4` — your trimmed, redacted screencast with your camera bubble
+  composited in, made entirely on your Mac. It reveals the file in Finder when it's done.
+
+### 🗂️ Library — review and find your videos
+The **Library** tab lists every take (tagged *transcript* / *rendered* / *walkthrough*). Select one
+to **Review** it with independent **Screen / Camera / Captions / Audio** toggles, and **Reveal in
+Finder** to grab the rendered `final.mp4` from the take's folder under `~/Movies/Slate/`.
+
+> **Want AI to do the editing?** Slate can also hand a recording to **Claude Code** for automatic
+> cuts, click-zoom, burned-in captions, and social/vertical reframes — see
+> [the `/slate` commands](#commands--what-to-run-after-a-recording) below. That path is optional;
+> the in-app Edit tab covers most everyday needs.
+
+---
+
 ## Status
 
-**v0.2** — recorder + editing pipeline + in-app review, packaged as a notarized app.
+**v0.5** — a full in-app recorder + editor, plus an optional Claude Code editing pipeline. Notarized.
 
-- 🎙️ **Verbatim transcription** via ElevenLabs Scribe (keeps "um/uh" with word-level
-  timestamps), with local Whisper as an offline fallback. Quiet mics are auto-normalized.
-- ✂️ **Claude edits the video** — `/slate social|course` runs the whole pipeline; sync is
-  guaranteed by construction (validated to ~3 ms on a real recording).
-- 🧠 **Comprehension layer** — every take gets a `take.md` digest + a tiled `contact_sheet.jpg`
-  so Claude can understand a recording without watching it.
-- 📦 **Standalone, notarized** — Developer-ID-signed `.app` + DMG; permissions persist.
+- 🎥 **Record** screen + camera + mic + a timestamped click log, with a built-in **teleprompter**.
+- ✂️ **In-app editor** — visual **trim**, **cut** dead air, **redaction/blur** boxes, and one-click
+  **render** to `final.mp4` (screen + your camera bubble). No terminal required.
+- 🧑‍💻 **Compose** a Loom-style talking-head layout over your screen.
+- 🎙️ **Verbatim transcription** via ElevenLabs Scribe (keeps "um/uh" with word-level timestamps),
+  with local Whisper as an offline fallback. Quiet mics are auto-normalized.
+- 🤖 **Claude edits the video** (optional) — `/slate social|course` runs the whole pipeline; sync is
+  guaranteed by construction (~3 ms on a real recording).
+- 📦 **Notarized** Developer-ID `.app` + DMG — opens cleanly on any Mac, permissions persist. Free
+  & open source (MIT).
 
 ---
 
