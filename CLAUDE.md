@@ -40,7 +40,7 @@ record (Slate.app)  →  ~/Movies/Slate/take-…/     # screen.mov camera.mov au
   Avoid `match`, runtime `X | Y` unions. Scripts use `from __future__ import annotations`.
 - **Transcription is ElevenLabs Scribe by default** (verbatim — keeps "um/uh" with word
   timestamps), auto-selected when `ELEVENLABS_API_KEY` is found (env or
-  `~/.claude/channels/telegram/.env`). whisper-cli is the offline/free fallback (it *drops*
+  `~/.config/slate/.env` or `~/.config/elevenlabs/.env`). whisper-cli is the offline/free fallback (it *drops*
   fillers — proven). Never hardcode the key. Force a backend with `--stt`/`$SLATE_STT`.
 - **Audio is peak-normalized before STT.** Real mic capture is often ~30 dB too quiet
   (a real take peaked at −29.6 dB → whisper returned `[BLANK_AUDIO]`). Normalization is

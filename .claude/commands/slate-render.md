@@ -1,6 +1,6 @@
 ---
 description: Render a Slate take's edit.json into final.mp4 (+ captions)
-argument-hint: [path to take bundle] [--preset social|course] [--preview]
+argument-hint: '[path to take bundle] [--preset social|course] [--preview]'
 ---
 
 Render the approved edit. Parse **$ARGUMENTS** for the bundle path (default: current
