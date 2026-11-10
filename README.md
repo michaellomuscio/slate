@@ -118,7 +118,7 @@ signed, you grant these **once** — rebuilds won't re-prompt.
 ### 2. Set up transcription (optional but recommended)
 
 Slate auto-detects an `ELEVENLABS_API_KEY` (from the environment or
-`~/.claude/channels/telegram/.env`) and uses ElevenLabs Scribe — **verbatim** transcription
+`~/.config/slate/.env` or `~/.config/elevenlabs/.env`) and uses ElevenLabs Scribe — **verbatim** transcription
 that keeps filler words with per-word timestamps. Without a key it falls back to local
 `whisper-cli` (free, offline, but it *drops* fillers). Force a backend with `--stt eleven|whisper`
 or `$SLATE_STT`.

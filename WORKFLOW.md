@@ -28,7 +28,7 @@ digest — so Claude can reason about a take without watching it, then drive ffm
   /Applications. First launch asks for Screen Recording / Camera / Mic; grant Accessibility for
   click-driven auto-zoom. (Signed with your Developer ID so these permissions persist.)
 - **Transcription key** (optional but recommended): Slate auto-finds `ELEVENLABS_API_KEY` in
-  `~/.claude/channels/telegram/.env`. With it, transcription is **verbatim** (keeps "um/uh" with
+  `~/.config/slate/.env` or `~/.config/elevenlabs/.env`. With it, transcription is **verbatim** (keeps "um/uh" with
   word timestamps). Without it, Slate falls back to local whisper (free, offline, but drops
   fillers). Force a backend with `--stt eleven|whisper` or `SLATE_STT`.
 - **ffmpeg**: the pipeline uses its own libass-enabled build at `pipeline/bin/ffmpeg`

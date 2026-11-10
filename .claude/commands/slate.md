@@ -1,6 +1,6 @@
 ---
 description: Drive a Slate take from raw recording to finished video — ingest, understand, edit, render — narrating the decisions
-argument-hint: [social|course] [path to take bundle | "latest"] [extra notes]
+argument-hint: '[social|course] [path to take bundle | "latest"] [extra notes]'
 ---
 
 You are the editor-in-chief for a Slate screencast. Take a recording from raw bundle to a

@@ -78,7 +78,7 @@ def find_elevenlabs_key(explicit=None):
             return v.strip()
     candidates = [
         Path.home() / ".config/slate/.env",
-        Path.home() / ".claude/channels/telegram/.env",
+        Path.home() / ".config/elevenlabs/.env",
     ]
     for env in candidates:
         try:
